@@ -1,0 +1,34 @@
+# /etc/conf.d/marusya-agent — settings for the marusya-agent OpenRC service.
+# The agent binary is downloaded from MARUSYA_SERVER into MARUSYA_AGENT_DIR
+# (tmpfs) on every start; run marusya-server with -agent_dir.
+
+# Set by `make deploy-agent SERVER=...`, e.g. ws://192.168.31.10:8080/v1/stream
+MARUSYA_SERVER=ws://192.168.31.102:8080/v1/stream
+# The server's shared token, or the speaker's own token from the web panel
+# (Колонки → Профиль колонки → Новый токен).
+MARUSYA_AUTH_TOKEN=secret
+MARUSYA_LANGUAGE=ru-RU
+# Where the speaker is, for "сколько время" and "какая погода". Empty values
+# fall back to marusya-server -default_location / -default_timezone. A
+# profile in the web panel overrides these.
+MARUSYA_LOCATION=
+MARUSYA_TIMEZONE=
+MARUSYA_CAPTURE_DEVICE=default
+MARUSYA_PLAYBACK_DEVICE=default
+MARUSYA_MIXER_CONTROL=Master
+
+# Keyword spotter: reads 16 kHz mono S16LE on stdin, prints a line per hit.
+MARUSYA_WAKE_COMMAND=
+# Hardware button: evdev node (see `cat /proc/bus/input/devices`).
+MARUSYA_BUTTON_DEVICE=
+
+# Bluetooth pairing: "auto" = bt-pair if present, "" = built-in bluetoothctl flow.
+MARUSYA_BT_PAIR_COMMAND=auto
+
+MARUSYA_MPV_SOCKET=/tmp/mpv.sock
+
+MARUSYA_AGENT_DIR=/tmp/marusya
+MARUSYA_AGENT_ARCH=arm64
+
+# Extra command-line flags, e.g. "-log_level debug -follow_up=false".
+MARUSYA_AGENT_ARGS=""

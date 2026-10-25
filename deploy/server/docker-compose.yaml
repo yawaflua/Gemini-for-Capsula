@@ -1,0 +1,73 @@
+# Copyright 2026 The Marusya-Gemini Authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+#   cp configs/server.env.example configs/server.env   # keys, token, location
+#   docker compose -f deploy/server/docker-compose.yaml up -d --build
+#
+# Speakers then use MARUSYA_SERVER=ws://<host>:8080/v1/stream. With
+# MARUSYA_PANEL_PASSWORD set, the web panel is at http://<host>:8080/panel/.
+
+services:
+  marusya-server:
+    build:
+      context: ../..
+      dockerfile: deploy/server/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    image: marusya-server:latest
+    container_name: marusya-server
+    restart: unless-stopped
+    ports:
+      - "${MARUSYA_PORT:-8080}:8080"
+    env_file: ../../configs/server.env
+    environment:
+      # Settings changed in the web panel survive restarts.
+      MARUSYA_SETTINGS_FILE: /data/settings.json
+      # Per-speaker region, languages and tokens (web panel, "Колонки").
+      MARUSYA_PROFILES_FILE: /data/devices.json
+      # Alarms and timers of the speakers.
+      MARUSYA_ALARMS_FILE: /data/alarms.json
+    volumes:
+      - marusya-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Wake word spotter: "антон", "אנטון", ... set in the web panel.
+  # Started only with: docker compose --profile wake up -d
+  # (and MARUSYA_WAKE_URL=ws://marusya-wake:2700 in configs/server.env).
+  marusya-wake:
+    profiles: ["wake"]
+    build:
+      context: ../wake
+    image: marusya-wake:latest
+    container_name: marusya-wake
+    restart: unless-stopped
+    environment:
+      # Whisper model for Hebrew and other non-Cyrillic words: tiny, base,
+      # small (default), medium, or a CTranslate2 model from Hugging Face.
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      # Fewer false wakes: higher confidence (0..1) and a longer hold of the
+      # word in Vosk's partial result (seconds). Too high misses quiet speech.
+      VOSK_MIN_CONF: ${VOSK_MIN_CONF:-0.6}
+      VOSK_HOLD: ${VOSK_HOLD:-0.25}
+    volumes:
+      - marusya-wake-cache:/cache
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  marusya-data:
+  marusya-wake-cache:

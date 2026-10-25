@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Маруся</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%237c5cff'/%3E%3Ccircle cx='16' cy='16' r='6' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<section id="login" class="login" hidden>
+  <form id="login-form" class="login-card">
+    <div class="brand brand-big"><span class="orb"></span>Маруся</div>
+    <p class="muted">Панель управления колонкой</p>
+    <label class="field">
+      <span>Пароль</span>
+      <input id="login-password" type="password" autocomplete="current-password" required autofocus>
+    </label>
+    <p id="login-error" class="error" hidden></p>
+    <button class="btn primary wide" type="submit">Войти</button>
+    <p class="hint">Пароль задаётся переменной <code>MARUSYA_PANEL_PASSWORD</code> на сервере.</p>
+  </form>
+</section>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand"><span class="orb"></span>Маруся</div>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="devices" aria-selected="true">
+        <span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2Zm-5 2a2 2 0 1 1 0 4 2 2 0 0 1 0-4Zm0 16a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z"/></svg></span>
+        <span class="tab-label">Колонки</span>
+      </button>
+      <button class="tab" role="tab" data-tab="history">
+        <span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3Zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12Z"/></svg></span>
+        <span class="tab-label">История</span>
+      </button>
+      <button class="tab" role="tab" data-tab="settings">
+        <span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.84a.5.5 0 0 0-.49.42l-.36 2.54a7.3 7.3 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.68 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.38 1.04.7 1.62.94l.36 2.54c.05.24.25.42.49.42h3.84c.24 0 .45-.18.49-.42l.36-2.54a7.3 7.3 0 0 0 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"/></svg></span>
+        <span class="tab-label">Настройки</span>
+      </button>
+    </nav>
+    <div class="topbar-right">
+      <span id="live" class="live" title="Связь с сервером"><span class="dot"></span><span id="live-text">…</span></span>
+      <button id="logout" class="btn text small">Выйти</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- Devices -->
+    <section id="tab-devices" class="tabpane">
+      <div class="server-line muted" id="server-line"></div>
+      <div class="devices-layout">
+        <aside class="device-list" id="device-list"></aside>
+        <div class="device-detail" id="device-detail"></div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="tab-history" class="tabpane" hidden>
+      <div class="toolbar">
+        <div class="seg" id="history-filter">
+          <button data-filter="all" class="on">Всё</button>
+          <button data-filter="turn">Диалоги</button>
+          <button data-filter="action">Действия</button>
+          <button data-filter="system">Система</button>
+        </div>
+        <select id="history-device" aria-label="Колонка"></select>
+      </div>
+      <ol class="feed" id="feed"></ol>
+      <p class="empty muted" id="feed-empty" hidden>Пока ничего не происходило. Скажите колонке «Маруся» или спросите её из вкладки «Колонки».</p>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="tabpane" hidden>
+      <form id="settings-form" class="card settings">
+        <h2>Настройки ассистента</h2>
+        <p class="muted" id="settings-note"></p>
+
+        <label class="field">
+          <span>Системный промпт <em>— характер и правила Маруси</em></span>
+          <textarea id="set-prompt" rows="9" spellcheck="false"></textarea>
+        </label>
+
+        <div class="grid2">
+          <label class="field">
+            <span>Город по умолчанию <em>— для погоды и времени</em></span>
+            <input id="set-location" placeholder="Например, Ашдод">
+          </label>
+          <label class="field">
+            <span>Часовой пояс</span>
+            <input id="set-timezone" list="timezones" placeholder="Europe/Moscow">
+            <datalist id="timezones"></datalist>
+          </label>
+          <label class="field">
+            <span>Язык речи</span>
+            <input id="set-language" list="languages" placeholder="ru-RU" required>
+            <datalist id="languages">
+              <option value="ru-RU">Русский</option>
+              <option value="uk-UA">Українська</option>
+              <option value="en-US">English</option>
+              <option value="he-IL">עברית</option>
+              <option value="de-DE">Deutsch</option>
+            </datalist>
+          </label>
+          <label class="field">
+            <span>Ещё языки</span>
+            <input id="set-extra-languages" list="languages" placeholder="he-IL" autocomplete="off">
+          </label>
+          <label class="field tunable">
+            <span>Голос</span>
+            <input id="set-voice" list="voices" placeholder="Kore">
+            <datalist id="voices"></datalist>
+          </label>
+          <label class="field tunable span2">
+            <span>Модель</span>
+            <input id="set-model" spellcheck="false">
+          </label>
+          <label class="field span2" id="wake-field">
+            <span>Ключевые слова <em>— через запятую, можно на иврите: «антон, אנטון»</em></span>
+            <input id="set-wake" spellcheck="false" placeholder="антон" autocomplete="off">
+            <small class="hint" id="wake-hint"></small>
+          </label>
+        </div>
+
+        <p id="settings-error" class="error" hidden></p>
+        <div class="actions">
+          <button class="btn primary" type="submit">Сохранить</button>
+          <button class="btn outlined" type="button" id="settings-reset">Вернуть как при запуске</button>
+          <span class="saved muted" id="settings-saved" hidden>Сохранено ✓</span>
+        </div>
+        <p class="hint">Новые настройки применяются к колонкам, которые сейчас молчат, сразу. Если колонка в этот момент разговаривает, они вступят в силу со следующим вопросом. Контекст текущего разговора при этом забывается.</p>
+      </form>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<template id="tpl-device-detail">
+  <div class="card device-head">
+    <div class="device-title">
+      <h2 data-f="name"></h2>
+      <span class="badge" data-f="state"></span>
+    </div>
+    <dl class="facts" data-f="facts"></dl>
+    <div class="row">
+      <button class="btn tonal small" data-act="forget">Забыть разговор</button>
+      <button class="btn text small" data-act="refresh">Обновить состояние</button>
+    </div>
+  </div>
+
+  <div class="card" data-cap="say">
+    <h3>Спросить Марусю</h3>
+    <form class="say" data-f="say-form">
+      <input data-f="say-text" maxlength="1000" placeholder="Например: какая завтра погода?" autocomplete="off">
+      <button class="btn primary" type="submit">Спросить</button>
+    </form>
+    <p class="hint">Ответ прозвучит из колонки и появится в истории.</p>
+    <p class="hint warn" data-f="say-off" hidden></p>
+  </div>
+
+  <div class="cards2">
+    <div class="card" data-cap="volume.set">
+      <h3>Громкость <span class="value" data-f="vol-value">—</span></h3>
+      <input type="range" min="0" max="100" step="1" data-f="vol" aria-label="Громкость">
+      <div class="row">
+        <button class="btn tonal small" data-act="vol-down" data-cap="volume.adjust">−10</button>
+        <button class="btn tonal small" data-act="vol-up" data-cap="volume.adjust">+10</button>
+        <button class="btn outlined small" data-act="mute" data-cap="volume.mute" data-f="mute">Выключить звук</button>
+      </div>
+    </div>
+
+    <div class="card" data-cap="media.control">
+      <h3>Музыка</h3>
+      <p class="now muted" data-f="now">—</p>
+      <div class="row media">
+        <button class="btn icon tonal" data-media="previous" title="Предыдущий">⏮</button>
+        <button class="btn icon primary" data-media="toggle" title="Пауза / играть">⏯</button>
+        <button class="btn icon tonal" data-media="next" title="Следующий">⏭</button>
+        <button class="btn icon tonal" data-media="stop" title="Стоп">⏹</button>
+      </div>
+      <form class="say" data-f="url-form" data-cap="media.play_url">
+        <input data-f="url" placeholder="Ссылка YouTube, радио или название песни">
+        <button class="btn tonal" type="submit">Играть</button>
+      </form>
+    </div>
+
+    <div class="card" data-cap="light.night">
+      <h3>Ночник
+        <label class="switch" title="Включить или выключить ночник">
+          <input type="checkbox" role="switch" data-f="light-on">
+          <span class="switch-track"><span class="switch-handle"></span></span>
+        </label>
+      </h3>
+      <div class="row">
+        <label class="color"><input type="color" data-f="light-color" value="#ffb000"><span>Цвет</span></label>
+        <label class="grow">
+          <span class="muted small-text">Яркость <span data-f="light-bri-value">40</span>%</span>
+          <input type="range" min="1" max="100" value="40" data-f="light-bri">
+        </label>
+      </div>
+      <p class="hint">Цвет и яркость применяются сразу.</p>
+    </div>
+
+    <div class="card" data-cap="bluetooth.pair">
+      <h3>Bluetooth</h3>
+      <ul class="bt" data-f="bt"></ul>
+      <div class="row">
+        <button class="btn tonal small" data-act="bt-pair">Режим сопряжения (2 мин)</button>
+        <button class="btn small text" data-act="bt-list" data-cap="bluetooth.devices">Список устройств</button>
+        <button class="btn small text" data-act="bt-off" data-cap="bluetooth.disconnect">Отключить все</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-f="alarms-card">
+    <h3>Будильники</h3>
+    <ul class="bt" data-f="alarms"></ul>
+    <form class="say" data-f="alarm-form">
+      <input type="time" data-f="a-time" required aria-label="Время">
+      <select data-f="a-repeat" aria-label="Повтор">
+        <option value="">один раз</option>
+        <option value="0,1,2,3,4,5,6">каждый день</option>
+        <option value="0,1,2,3,4">вс–чт</option>
+        <option value="1,2,3,4,5">пн–пт</option>
+        <option value="5,6">пт–сб</option>
+        <option value="0,6">вс, сб</option>
+      </select>
+      <input type="number" data-f="a-volume" min="1" max="100" placeholder="Громкость %" aria-label="Громкость">
+      <input data-f="a-music" maxlength="200" placeholder="Музыка (необязательно)">
+      <button class="btn tonal" type="submit">Добавить</button>
+    </form>
+    <p class="hint">Колонка звонит сама, даже если сервер недоступен. Выключить — нажать на колонку или сказать «Маруся». Звонит до 10 минут.</p>
+  </div>
+
+  <form class="card settings" data-f="profile-form">
+    <h3>Профиль колонки <span class="value muted" data-f="profile-id"></span></h3>
+    <p class="hint">Свои город, часовой пояс и языки для этой колонки. Пустое поле — берётся из общих настроек. Профиль привязан к ID колонки и переживает перезагрузки.</p>
+    <div class="grid2">
+      <label class="field">
+        <span>Название</span>
+        <input data-f="p-name" maxlength="80" placeholder="Кухня у Ивановых" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Город <em>— для погоды и времени</em></span>
+        <input data-f="p-location" maxlength="120" placeholder="Например, Хайфа" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Часовой пояс</span>
+        <input data-f="p-timezone" list="timezones" placeholder="Asia/Jerusalem" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Язык речи</span>
+        <input data-f="p-language" list="languages" placeholder="ru-RU" autocomplete="off">
+      </label>
+      <label class="field span2">
+        <span>Ещё языки <em>— через запятую</em></span>
+        <input data-f="p-extra" list="languages" placeholder="he-IL, en-US" autocomplete="off">
+      </label>
+      <label class="field span2">
+        <span>Токен колонки <em>— MARUSYA_AUTH_TOKEN на этой колонке; с ним она может подключиться только под своим ID</em></span>
+        <input data-f="p-token" spellcheck="false" autocomplete="off" placeholder="не задан — колонка входит по общему токену">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="btn primary" type="submit">Сохранить профиль</button>
+      <button class="btn tonal" type="button" data-f="p-gen">Новый токен</button>
+      <button class="btn outlined" type="button" data-f="p-del">Удалить профиль</button>
+    </div>
+  </form>
+</template>
+
+</body>
+</html>
