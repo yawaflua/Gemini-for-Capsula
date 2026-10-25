@@ -1,0 +1,7 @@
+# Build context for deploy/server/Dockerfile.
+bin/
+.git/
+.claude/
+# Secrets never go into the image.
+configs/*.env
+*.env

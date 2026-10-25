@@ -1,0 +1,80 @@
+#!/sbin/openrc-run
+# Copyright 2026 The Marusya-Gemini Authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# OpenRC service for marusya-agent (Alpine Linux).
+#
+# The speaker's flash is almost full, so only this script and its config live
+# there. On start the agent binary is downloaded from marusya-server
+# (GET /v1/agent/<arch>, requires -agent_dir on the server) into tmpfs.
+#
+# Configuration: /etc/conf.d/marusya-agent
+
+name="marusya-agent"
+description="Marusya Gemini voice agent"
+
+: "${MARUSYA_AGENT_DIR:=/tmp/marusya}"
+: "${MARUSYA_AGENT_ARCH:=arm64}"
+
+command="${MARUSYA_AGENT_DIR}/marusya-agent"
+command_args="${MARUSYA_AGENT_ARGS}"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+output_log="/tmp/marusya-agent.log"
+error_log="/tmp/marusya-agent.log"
+extra_started_commands="wake"
+description_wake="Activate the assistant without the wake word (sends SIGUSR1)."
+
+depend() {
+	use net alsa bluetooth dns
+	after net-online bluetooth
+}
+
+agent_url() {
+	# ws://host:port/v1/stream -> http://host:port/v1/agent/<arch>
+	echo "$MARUSYA_SERVER" | sed -e 's#^ws#http#' -e 's#/v1/stream.*$##' \
+		-e "s#\$#/v1/agent/${MARUSYA_AGENT_ARCH}#"
+}
+
+fetch_agent() {
+	url="$(agent_url)"
+	tmp="${command}.download"
+	mkdir -p "$MARUSYA_AGENT_DIR"
+	# ~1 minute in total: enough for Wi-Fi to come up at boot.
+	for i in $(seq 1 10); do
+		if wget -q -T 5 -O "$tmp" --header "Authorization: Bearer ${MARUSYA_AUTH_TOKEN}" "$url"; then
+			chmod 0755 "$tmp" && mv -f "$tmp" "$command"
+			return 0
+		fi
+		sleep 1
+	done
+	rm -f "$tmp"
+	return 1
+}
+
+start_pre() {
+	# Export MARUSYA_* settings from conf.d to the agent's environment.
+	export $(grep -E '^MARUSYA_[A-Z_]+=' /etc/conf.d/marusya-agent 2>/dev/null | cut -d= -f1)
+
+	if [ -z "$MARUSYA_SERVER" ]; then
+		eerror "MARUSYA_SERVER is not set in /etc/conf.d/marusya-agent"
+		return 1
+	fi
+	ebegin "Downloading agent from $(agent_url)"
+	if ! fetch_agent; then
+		if [ -x "$command" ]; then
+			ewarn "Download failed, using the cached copy"
+		else
+			eend 1 "Cannot download the agent; is marusya-server running with -agent_dir?"
+			return 1
+		fi
+	fi
+	eend 0
+}
+
+wake() {
+	ebegin "Waking $name"
+	supervise-daemon "$RC_SVCNAME" --signal USR1
+	eend $?
+}
