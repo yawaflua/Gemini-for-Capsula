@@ -770,7 +770,21 @@ func (d *deviceSession) execute(turnID string, c provider.ToolCall, suppressed b
 		ctx, cancel := context.WithTimeout(d.ctx, d.cfg.CommandTimeout)
 		defer cancel()
 		start := time.Now()
-		out, err := sk.Run(ctx, d.device(), c.Args)
+		dev := d.device()
+		dev.Command = func(ctx context.Context, action models.Action, args map[string]any) (map[string]any, error) {
+			if !d.supports(action) {
+				return nil, fmt.Errorf("the speaker cannot do %s", action)
+			}
+			r, err := d.command(ctx, turnID, "", action, args, SourceVoice)
+			switch {
+			case err != nil:
+				return nil, err
+			case !r.OK:
+				return nil, errors.New(r.Error)
+			}
+			return r.Data, nil
+		}
+		out, err := sk.Run(ctx, dev, c.Args)
 		ev := Event{Kind: EventSkill, Session: d.id, Device: d.hello.DeviceID, Name: c.Name,
 			Args: c.Args, LatencyMS: time.Since(start).Milliseconds()}
 		if err != nil {

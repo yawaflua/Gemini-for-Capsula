@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,16 +76,33 @@ func cmpOr(a, b string) string {
 // infoTemplate is printed by yt-dlp to fd 3 right before the download.
 const infoTemplate = "before_dl:%(title)s\t%(duration)s"
 
+// variants are versions of a song nobody means by its name alone.
+var variants = regexp.MustCompile(`(?i)instrumental|инструментал|минус|karaoke|караоке|backing track|` +
+	`slowed|sped up|speed up|nightcore|8d audio|reverb|bass boost`)
+
+// searchFilter is a yt-dlp --match-filters skipping [variants].
+var searchFilter = "title !~= '" + variants.String() + "'"
+
 // Open implements [media.Source]. The returned track keeps both processes
 // running until it is read to the end or closed.
+//
+// A search skips instrumentals, karaoke, slowed and similar versions among
+// the first results unless the query asks for one: when YouTube has only
+// those, the song is reported as not found rather than played as a minus.
 func (s *Source) Open(ctx context.Context, r media.Request) (*media.Track, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
-	target := r.URL
-	if r.Query != "" {
-		target = "ytsearch1:" + r.Query
+	switch {
+	case r.Query == "":
+		return s.open(ctx, r, r.URL)
+	case variants.MatchString(r.Query):
+		return s.open(ctx, r, "ytsearch1:"+r.Query)
 	}
+	return s.open(ctx, r, "ytsearch5:"+r.Query, "--max-downloads", "1", "--match-filters", searchFilter)
+}
+
+func (s *Source) open(ctx context.Context, r media.Request, target string, extra ...string) (*media.Track, error) {
 	// The processes outlive Open: they stop when the track is closed.
 	pctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 
@@ -101,7 +119,7 @@ func (s *Source) Open(ctx context.Context, r media.Request) (*media.Track, error
 		"--print-to-file", infoTemplate, "/dev/fd/3",
 		"--output", "-",
 	}
-	args = append(append(args, s.Args...), "--", target)
+	args = append(append(append(args, extra...), s.Args...), "--", target)
 	dl := exec.CommandContext(pctx, s.ytdlp(), args...)
 	dl.ExtraFiles = []*os.File{infoW}
 	dlErr := &tail{}
@@ -153,6 +171,10 @@ func (s *Source) Open(ctx context.Context, r media.Request) (*media.Track, error
 	go func() {
 		defer t.wg.Done()
 		t.dlWait = dl.Wait()
+		// --max-downloads ends yt-dlp with 101 once the track is downloaded.
+		if e := (*exec.ExitError)(nil); errors.As(t.dlWait, &e) && e.ExitCode() == 101 {
+			t.dlWait = nil
+		}
 	}()
 
 	// Wait for the metadata line, which yt-dlp prints once it has found the

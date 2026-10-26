@@ -49,6 +49,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/skills"
 	"github.com/yawaflua/marusya-gemini/internal/skills/clock"
 	"github.com/yawaflua/marusya-gemini/internal/skills/homeassistant"
+	"github.com/yawaflua/marusya-gemini/internal/skills/spotify"
 	"github.com/yawaflua/marusya-gemini/internal/skills/weather"
 	"github.com/yawaflua/marusya-gemini/internal/speech/geminispeech"
 )
@@ -67,6 +68,9 @@ var (
 	haURL      = flag.String("ha_url", config.Env("MARUSYA_HA_URL", ""), "Home Assistant URL, e.g. http://homeassistant.local:8123: enables the home_find and home_control skills.")
 	haToken    = flag.String("ha_token", config.Env("MARUSYA_HA_TOKEN", ""), "Home Assistant long-lived access token.")
 	haDomains  = flag.String("ha_domains", config.Env("MARUSYA_HA_DOMAINS", ""), "Comma separated entity domains that may be controlled by voice; empty: lights, switches, covers, climate, media players, scenes, scripts... (no locks or alarms).")
+	spID       = flag.String("spotify_client_id", config.Env("MARUSYA_SPOTIFY_CLIENT_ID", ""), "Client ID of a Spotify app (developer.spotify.com): enables the spotify_play skill. The server only searches; speakers play in spotifyd, signed in to their owner's Premium account.")
+	spSecret   = flag.String("spotify_client_secret", config.Env("MARUSYA_SPOTIFY_CLIENT_SECRET", ""), "Client secret of the Spotify app.")
+	spMarket   = flag.String("spotify_market", config.Env("MARUSYA_SPOTIFY_MARKET", ""), "ISO country code, e.g. IL: find only music playable there. Empty searches every country.")
 	profiles   = flag.String("profiles_file", config.Env("MARUSYA_PROFILES_FILE", ""), "JSON file with per-speaker profiles (region, languages, own token), editable in the web panel. Empty keeps them in memory.")
 	mediaOn    = flag.Bool("media", config.EnvBool("MARUSYA_MEDIA", true), "Let speakers play YouTube and other sites (GET /v1/media). Needs yt-dlp and ffmpeg on the server.")
 	ytdlpArgs  = flag.String("ytdlp_args", config.Env("MARUSYA_YTDLP_ARGS", ""), `Extra yt-dlp arguments, e.g. "--js-runtimes node" or "--cookies /data/cookies.txt".`)
@@ -156,6 +160,11 @@ func run() error {
 		}
 		set = append(set, ha.Skills()...)
 		log.Info("Home Assistant skills enabled", "url", *haURL, "domains", cmp.Or(*haDomains, strings.Join(homeassistant.DefaultDomains, ",")))
+	}
+	if *spID != "" {
+		sp := &spotify.Client{ClientID: *spID, ClientSecret: *spSecret, Market: *spMarket}
+		set = append(set, sp.Skills()...)
+		log.Info("Spotify skill enabled", "market", cmp.Or(*spMarket, "any"))
 	}
 
 	cfg := server.Config{

@@ -430,6 +430,69 @@ marusya-ask -server http://192.168.31.80:8080 -token "$MARUSYA_AUTH_TOKEN" -list
 
 Код, ссылки и markdown выбрасываются. Ответ передаётся Claude как распознанная речь, с пометкой, что возможны ошибки распознавания.
 
+### Spotify
+
+Если Spotify настроен, музыка по умолчанию идёт из него: «Маруся, включи Кино — Группа
+крови», «поставь альбом Nevermind». Модель вызывает серверный навык `spotify_play`. Сервер
+ищет музыку в каталоге Spotify и отправляет колонке ссылку `spotify:…`, а агент открывает
+её в spotifyd через MPRIS. Если в Spotify такого нет или spotifyd не отвечает, то же самое
+само включается с YouTube. Видео, подкасты и «включи с ютуба» по-прежнему идут в YouTube.
+Пауза, «дальше» и пауза на время разговора работают как раньше.
+
+Сервер ищет от имени приложения (client credentials), без аккаунтов пользователей,
+поэтому одного приложения хватает на любое число колонок. Играет колонка с того
+аккаунта, в который залогинен её spotifyd. Нужен Premium.
+
+**На сервере** создайте приложение на
+[developer.spotify.com](https://developer.spotify.com/dashboard) (Web API) и задайте
+в `configs/server.env`:
+
+```
+MARUSYA_SPOTIFY_CLIENT_ID=…
+MARUSYA_SPOTIFY_CLIENT_SECRET=…
+```
+
+**На колонке** нужен spotifyd 0.4+ с MPRIS (`apk add spotifyd playerctl dbus`). Графической
+сессии там нет, поэтому spotifyd работает на системной шине D-Bus. `/etc/spotifyd.conf`:
+
+```toml
+[global]
+device_name = "Marusya"
+backend = "alsa"
+device = "default"          # через asound.conf, вместе с эквалайзером
+use_mpris = true
+dbus_type = "system"
+cache_path = "/var/cache/spotifyd"   # здесь сохраняется вход
+```
+
+Разрешение для spotifyd на системной шине, `/etc/dbus-1/system.d/spotifyd.conf`:
+
+```xml
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="root">
+    <allow own_prefix="org.mpris.MediaPlayer2.spotifyd"/>
+    <allow own_prefix="rs.spotifyd"/>
+  </policy>
+  <policy context="default">
+    <allow send_destination_prefix="org.mpris.MediaPlayer2.spotifyd"/>
+    <allow send_destination_prefix="rs.spotifyd"/>
+  </policy>
+</busconfig>
+```
+
+Войти один раз: `spotifyd authenticate` или выбрать «Marusya» в приложении Spotify в той
+же сети Wi-Fi. Вход сохраняется в `cache_path`, после перезагрузки spotifyd логинится сам.
+Сервис: скопируйте `deploy/agent/spotifyd.openrc` в `/etc/init.d/spotifyd`, затем
+`rc-update add dbus default && rc-update add spotifyd default`.
+
+spotifyd 0.4 показывает плеер MPRIS, только пока он активное устройство Spotify Connect.
+Поэтому агент перед открытием ссылки `spotify:` сам делает его активным
+(`rs.spotifyd.Controls.TransferPlayback`), и выбирать колонку в приложении не нужно.
+
+Ищутся только публичные плейлисты: личные плейлисты пользователя серверу не видны.
+
 ### Home Assistant
 
 **Маруся управляет домом.** Задайте в `configs/server.env`:

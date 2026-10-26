@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/coder/websocket v1.8.15
+	golang.org/x/oauth2 v0.30.0
 	google.golang.org/genai v1.76.0
 )
 

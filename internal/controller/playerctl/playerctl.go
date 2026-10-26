@@ -19,11 +19,13 @@ package playerctl
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yawaflua/marusya-gemini/internal/controller"
 	"github.com/yawaflua/marusya-gemini/internal/models"
@@ -49,17 +51,20 @@ func (p *Player) run(ctx context.Context, args ...string) (string, error) {
 	if p.Name != "" {
 		args = append([]string{"-p", p.Name}, args...)
 	}
-	r := p.Runner
-	if r == nil {
-		r = p.exec()
-	}
-	out, err := r.Run(ctx, "playerctl", args...)
+	out, err := p.runner().Run(ctx, "playerctl", args...)
 	if err != nil && strings.Contains(err.Error(), "D-Bus") {
 		p.mu.Lock()
 		p.bus = "" // the player may have restarted; look again next time
 		p.mu.Unlock()
 	}
 	return out, err
+}
+
+func (p *Player) runner() syscmd.Runner {
+	if p.Runner != nil {
+		return p.Runner
+	}
+	return p.exec()
 }
 
 // exec returns a runner that can reach the players' D-Bus.
@@ -163,12 +168,158 @@ func (p *Player) Control(ctx context.Context, op models.MediaOperation) error {
 // PlayURL implements [controller.Media]. Support depends on the player:
 // spotifyd only opens spotify: URIs.
 func (p *Player) PlayURL(ctx context.Context, url string) error {
+	if strings.HasPrefix(url, "spotify:") {
+		return p.openSpotify(ctx, url)
+	}
 	_, err := p.run(ctx, "open", url)
-	if err != nil && !strings.HasPrefix(url, "spotify:") && (strings.Contains(err.Error(), "No players") ||
-		strings.Contains(p.Name, "spotifyd")) {
+	if err != nil && (strings.Contains(err.Error(), "No players") || strings.Contains(p.Name, "spotifyd")) {
 		return fmt.Errorf("%w (the MPRIS player can only open spotify: links; web streams and YouTube need mpv)", err)
 	}
 	return err
+}
+
+// spotifydWait bounds how long spotifyd takes to show its MPRIS player
+// after TransferPlayback, and to start a track it was asked to open.
+var spotifydWait = 5 * time.Second
+
+// openSpotify opens a spotify: link in spotifyd and checks that it plays.
+//
+// spotifyd 0.4 ignores links while it is not the active Spotify Connect
+// device (after a stop, or until someone picked it in a Spotify app), and
+// its MPRIS player may be gone or left behind in that state; its own
+// rs.spotifyd.Controls interface activates it without a phone. It also
+// opens a track as its album from the track's position and gets that
+// position wrong (one too far, seen with 0.4.2), so the next song plays.
+func (p *Player) openSpotify(ctx context.Context, url string) error {
+	id, isTrack := strings.CutPrefix(url, "spotify:track:")
+	var err error
+	for range 2 {
+		if !p.spotifydActive(ctx) {
+			p.wakeSpotifyd(ctx)
+		}
+		before := p.trackID(ctx)
+		if isTrack && strings.Contains(before, id) {
+			before = "" // the same song again: any track means it plays
+		}
+		if _, err = p.run(ctx, "open", url); err != nil {
+			continue
+		}
+		cur := p.waitTrack(ctx, before)
+		if cur == "" && p.spotifydActive(ctx) {
+			// Taken, but it landed on the song that played before.
+			cur = p.trackID(ctx)
+		}
+		if cur == "" {
+			err = errors.New("spotifyd did not start playing; is it signed in?")
+			continue
+		}
+		if isTrack {
+			p.fixSpotifydTrack(ctx, id, cur)
+		}
+		return nil
+	}
+	return err
+}
+
+// spotifydActive reports whether spotifyd is the active device: its MPRIS
+// player is up and not stopped.
+func (p *Player) spotifydActive(ctx context.Context) bool {
+	if !p.hasSpotifyd(ctx) {
+		return false
+	}
+	st, err := p.run(ctx, "status")
+	return err == nil && st != "Stopped"
+}
+
+// wakeSpotifyd makes spotifyd the active Spotify Connect device. Failures
+// are left to the following open to report.
+func (p *Player) wakeSpotifyd(ctx context.Context) {
+	r := p.runner()
+	names, err := r.Run(ctx, "dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.DBus",
+		"/org/freedesktop/DBus", "org.freedesktop.DBus.ListNames")
+	if err != nil {
+		return
+	}
+	var dest string
+	for _, f := range strings.Fields(names) {
+		if n := strings.Trim(f, `"`); strings.HasPrefix(n, "rs.spotifyd.") {
+			dest = n
+		}
+	}
+	if dest == "" {
+		return
+	}
+	if _, err := r.Run(ctx, "dbus-send", "--session", "--print-reply", "--dest="+dest,
+		"/rs/spotifyd/Controls", "rs.spotifyd.Controls.TransferPlayback"); err != nil {
+		return
+	}
+	deadline := time.Now().Add(spotifydWait)
+	for !p.spotifydActive(ctx) && time.Now().Before(deadline) {
+		if !sleep(ctx, 200*time.Millisecond) {
+			return
+		}
+	}
+}
+
+// fixSpotifydTrack steps back to track id if spotifyd started cur instead.
+func (p *Player) fixSpotifydTrack(ctx context.Context, id, cur string) {
+	for range 2 {
+		if strings.Contains(cur, id) {
+			return
+		}
+		if _, err := p.run(ctx, "previous"); err != nil {
+			return
+		}
+		if cur = p.waitTrack(ctx, cur); cur == "" {
+			return
+		}
+	}
+}
+
+// trackID returns spotifyd's mpris:trackid, "" when there is none.
+func (p *Player) trackID(ctx context.Context) string {
+	out, err := p.run(ctx, "metadata", "mpris:trackid")
+	if err != nil || strings.HasSuffix(out, "/NoTrack") {
+		return ""
+	}
+	return out
+}
+
+// waitTrack waits until spotifyd plays a track other than prev and returns
+// its mpris:trackid, or "" if none comes in time.
+func (p *Player) waitTrack(ctx context.Context, prev string) string {
+	deadline := time.Now().Add(spotifydWait)
+	for {
+		if cur := p.trackID(ctx); cur != "" && cur != prev {
+			return cur
+		}
+		if time.Now().After(deadline) || !sleep(ctx, 200*time.Millisecond) {
+			return ""
+		}
+	}
+}
+
+func sleep(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+// hasSpotifyd reports whether spotifyd's MPRIS player is up.
+func (p *Player) hasSpotifyd(ctx context.Context) bool {
+	out, err := p.runner().Run(ctx, "playerctl", "-l")
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Fields(out) {
+		if strings.HasPrefix(l, "spotifyd") {
+			return true
+		}
+	}
+	return false
 }
 
 // Status implements [controller.Media].
