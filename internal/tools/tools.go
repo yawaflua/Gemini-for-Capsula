@@ -113,11 +113,14 @@ var registry = []Tool{
 	{
 		Action: models.ActionMediaPlaySearch,
 		Description: "Finds a song, music video, podcast, audiobook or any other video on YouTube and plays its sound on the speaker. " +
-			"Use it whenever the user asks to play or put on something by name (\"включи Кино — Группа крови\", \"поставь лоу-фай\", \"включи видео про котов с ютуба\"). " +
+			"Use it whenever the user asks to play or put on something by name (\"включи Кино — Группа крови\", \"поставь лоу-фай\", \"включи видео про котов с ютуба\"), " +
+			"except music when spotify_play is available: then use it only for YouTube, videos, podcasts and audiobooks, or when the user asks for YouTube. " +
 			"Stop, pause and resume it with media_control.",
 		Parameters: []Parameter{{
 			Name: "query", Type: TypeString, Required: true,
-			Description: "Search query in the language of the title, e.g. \"Кино Группа крови\" or \"lofi hip hop radio\".",
+			Description: "Search query in the language of the title, e.g. \"Кино Группа крови\" or \"lofi hip hop radio\". " +
+				"Keep the user's words as they are: titles are often slang or made-up words, never correct them into a familiar word " +
+				"(\"шахшахаха\" stays \"шахшахаха\", not \"шакшука\"). Include the artist whenever the user named one.",
 		}},
 	},
 	{

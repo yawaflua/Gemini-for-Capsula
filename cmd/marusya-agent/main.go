@@ -110,9 +110,9 @@ var (
 	touchKeys      = flag.String("touch_keys", config.Env("MARUSYA_TOUCH_KEYS", "auto"), `Touch panel: "auto" (find "Hynitron CSK05T"), an evdev node, or empty to disable.`)
 	touchCenterKey = flag.Uint("touch_center_key", touchkeys.KeyVoice, "Key code of the centre key that activates the assistant.")
 
-	ringledPath       = flag.String("ringled", config.Env("MARUSYA_RINGLED", "auto"), `LED ring utility; "auto" uses ringled from PATH, empty disables the ring.`)
+	ringMode          = flag.String("ring", config.Env("MARUSYA_RING", "auto"), `LED ring: "auto" (on a VK Capsula Mini, by its device tree), "on" or empty to disable.`)
+	ringDev           = flag.String("ring_dev", config.Env("MARUSYA_RING_DEV", ringled.DefaultDevice), "spidev node of the LED ring.")
 	ringledBrightness = flag.Int("ringled_brightness", 30, "LED ring brightness, per cent.")
-	ringDriver        = flag.String("ring_driver", config.Env("MARUSYA_RING_DRIVER", "auto"), `How to drive the LED ring: "spi" (frames straight to `+ringled.DefaultDevice+`, smooth animations), "ringled" (one ringled run per frame) or "auto" (spi if available).`)
 	ringDemo          = flag.Bool("ring_demo", false, "Play every LED ring animation once and exit.")
 
 	logLevel = flag.String("log_level", config.Env("MARUSYA_LOG_LEVEL", "info"), "Log level: debug, info, warn, error.")
@@ -379,24 +379,18 @@ func run() error {
 	return a.Run(ctx)
 }
 
-// ringStrip picks the LED ring output from the flags; nil disables the ring.
+// ringStrip returns the LED ring from the flags; nil disables the ring.
 func ringStrip() (ringled.Strip, string) {
-	path := *ringledPath
-	if path == "" {
+	switch *ringMode {
+	case "on":
+	case "auto":
+		if !ringled.Detect() {
+			return nil, ""
+		}
+	default:
 		return nil, ""
 	}
-	if path == "auto" {
-		path, _ = exec.LookPath("ringled")
-	}
-	spi := ringled.SPIAvailable(ringled.DefaultDevice)
-	switch {
-	case *ringDriver == "spi" || (*ringDriver == "auto" && spi && path != ""):
-		// Only on the speaker: ringled in PATH tells it is the VK Капсула.
-		return ringled.NewSPI(ringled.DefaultDevice), "spi " + ringled.DefaultDevice
-	case path != "":
-		return ringled.NewExec(path), "ringled " + path
-	}
-	return nil, ""
+	return ringled.NewSPI(*ringDev), "spi " + *ringDev
 }
 
 // playRingDemo shows every look of the ring once (-ring_demo).

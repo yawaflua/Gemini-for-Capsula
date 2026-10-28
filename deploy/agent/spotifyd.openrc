@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# Copyright 2026 The Marusya-Gemini Authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# OpenRC service for spotifyd on the speaker, for the spotify_play skill.
+#
+# spotifyd must use the system D-Bus (dbus_type = "system" in
+# /etc/spotifyd.conf, policy in /etc/dbus-1/system.d/spotifyd.conf): there
+# is no desktop session bus. The agent finds it there and activates it with
+# rs.spotifyd.Controls.TransferPlayback before opening spotify: links.
+
+name="spotifyd"
+description="Spotify Connect daemon"
+
+command="/usr/bin/spotifyd"
+command_args="--no-daemon --config-path /etc/spotifyd.conf"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+output_log="/tmp/spotifyd.log"
+error_log="/tmp/spotifyd.log"
+
+depend() {
+	need dbus
+	use net alsa dns
+	after net-online
+	before marusya-agent
+}

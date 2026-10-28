@@ -15,14 +15,12 @@
 package ringled
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -37,17 +35,25 @@ type Strip interface {
 // DefaultDevice is the spidev node of the ring.
 const DefaultDevice = "/dev/spidev0.0"
 
-// SPIAvailable reports whether [NewSPI] can drive the ring on this device.
-func SPIAvailable(dev string) bool {
-	if _, err := os.Stat(spiDriver); err != nil {
+// compatiblePath lists the device tree compatible strings (a variable for
+// tests).
+var compatiblePath = "/proc/device-tree/compatible"
+
+// Detect reports whether this is a VK Capsula Mini whose ring [NewSPI] can
+// drive: the device tree names the board and the meson-spicc driver is
+// loaded. The spidev node itself may be missing for a moment, while the
+// controller is rebound, or for good after an interrupted rebind, which the
+// first frame repairs.
+func Detect() bool {
+	b, err := os.ReadFile(compatiblePath)
+	if err != nil || !slices.Contains(strings.Split(string(b), "\x00"), "vk,capsula-mini") {
 		return false
 	}
-	_, err := os.Stat(dev)
+	_, err = os.Stat(spiDriver)
 	return err == nil
 }
 
-// spiStrip writes frames to spidev directly, the way the firmware's ringled
-// does: the meson-spicc driver only clocks the first transfer after a bind
+// spiStrip writes frames to spidev directly: the meson-spicc driver only clocks the first transfer after a bind
 // at the requested rate, so the controller is rebound before every frame.
 // That costs a few milliseconds, still fine for 30 frames a second.
 type spiStrip struct {
@@ -146,36 +152,4 @@ func rebindSPI(dev string) error {
 		}
 		time.Sleep(time.Millisecond)
 	}
-}
-
-// execStrip shows frames with the ringled utility, one run per frame.
-type execStrip struct{ path string }
-
-// NewExec returns a strip driven by the ringled binary at path.
-func NewExec(path string) Strip { return execStrip{path: path} }
-
-func (s execStrip) Write(f Frame) error {
-	args := []string{"-b", "100", "set"}
-	for i, px := range f {
-		args = append(args, strconv.Itoa(i), px.String())
-	}
-	var (
-		out []byte
-		err error
-	)
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		out, err = exec.CommandContext(ctx, s.path, args...).CombinedOutput()
-		cancel()
-		if err == nil {
-			return nil
-		}
-		if strings.Contains(string(out), "no meson-spicc device bound") {
-			bindSPI()
-		}
-	}
-	return fmt.Errorf("ringled: %w: %s", err, strings.TrimSpace(string(out)))
 }

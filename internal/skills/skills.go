@@ -37,6 +37,9 @@ type Device struct {
 	TimeZone string
 	// Language is a BCP-47 code, e.g. "ru-RU".
 	Language string
+	// Command runs an action on the speaker and returns its result data. It
+	// is nil when there is no speaker to run it on.
+	Command func(ctx context.Context, action models.Action, args map[string]any) (map[string]any, error)
 }
 
 // Skill is a server-side function.

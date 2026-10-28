@@ -58,7 +58,7 @@ internal/
     button/             аппаратная кнопка через /dev/input/eventN
     signal/             активация по SIGUSR1
   indicator/            интерфейс индикатора состояния (+ Multi)
-    ringled/            LED-кольцо через утилиту прошивки ringled
+    ringled/            LED-кольцо через spidev ядра
     face/               мордашка на 7-сегментном экране (порт mordy)
   display/seg7/         драйвер 7-сегментной панели (line-display sysfs)
   sensor/light/         датчик освещённости (IIO)
@@ -247,6 +247,30 @@ ANTHROPIC_API_KEY=... GEMINI_API_KEY=... ./bin/marusya-server -provider claude \
 возвращает старое поведение.
 Для работы через интернет используйте `-tls_cert/-tls_key` (wss://) или reverse proxy.
 
+### Прокси
+
+Если Gemini недоступен из вашей страны или сервер выходит в интернет только через прокси,
+задайте `-proxy` (`MARUSYA_PROXY`). Поддерживаются `http://`, `https://` (TLS до прокси),
+`socks5://` и `socks5h://` (DNS на стороне прокси), логин и пароль пишутся в адресе:
+
+```bash
+MARUSYA_PROXY=socks5h://user:pass@proxy.example.com:1080 ./bin/marusya-server ...
+```
+
+Через прокси идут все исходящие запросы сервера: Gemini (REST и Live API), Claude,
+Spotify, Open-Meteo, Home Assistant и yt-dlp (ему передаётся `--proxy`, если его нет
+в `MARUSYA_YTDLP_ARGS`; для `https://`-прокси yt-dlp нужен модуль `requests`).
+
+- `-gemini_proxy` (`MARUSYA_GEMINI_PROXY`) задаёт отдельный прокси только для Gemini.
+  Значение `direct` подключает Gemini напрямую, даже если задан `-proxy`.
+- `-no_proxy` (`MARUSYA_NO_PROXY`) перечисляет адреса, к которым сервер ходит напрямую:
+  хосты, домены (`.example.com`) и подсети CIDR. По умолчанию это частные сети
+  (`192.168.0.0/16`, `10.0.0.0/8`, …) и домены `.local`, `.lan`, `.home.arpa`, поэтому
+  Home Assistant в домашней сети работает без прокси. `localhost` и имена без точки
+  (сервисы Docker вроде `marusya-wake`, `homeassistant`) всегда идут напрямую.
+
+Без `-proxy` сервер, как и раньше, учитывает `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`.
+
 ## Запуск на колонке (Alpine Linux)
 
 Нужен root по ssh. Агент — статический бинарник, поэтому musl ему не мешает. Зависимости ставятся из apk
@@ -264,13 +288,23 @@ make deploy-agent DEVICE=root@<ip-колонки>   # бинарник, OpenRC-�
 ```bash
 rc-service marusya-agent restart
 rc-service marusya-agent wake      # тестовая активация без ключевого слова (SIGUSR1)
-tail -f /var/log/marusya-agent.log
+tail -f /tmp/marusya-agent.log
 ```
 
 ### Экран, кнопки, кольцо (VK Капсула Мини)
 
-Агент сам управляет экраном и сенсорной панелью, поэтому сервис `mordy` нужно выключить
-(`rc-service mordy stop; rc-update del mordy`), иначе оба процесса будут рисовать на экране.
+Агент работает с железом напрямую через интерфейсы ядра, утилиты прошивки (`ringled`,
+`mordy`, `clockdisp`, `lightmon`) ему не нужны:
+
+| Устройство | Интерфейс ядра |
+|---|---|
+| экран | `line-display` (`/sys/devices/platform/display/linedisp.0`) и сегменты `/sys/class/leds/clock:d1:a` … `clock:d4:g`, точки `clock:colon:*` |
+| датчик освещённости BH1730 | IIO, `/sys/bus/iio/devices/iio:device0/in_illuminance_input` |
+| LED-кольцо | `spidev` (`/dev/spidev0.0`) на контроллере `meson-spicc` |
+| сенсорные кнопки | evdev, `/dev/input/eventN` |
+
+Сервис `mordy` нужно выключить (`rc-service mordy stop; rc-update del mordy`), иначе он тоже
+будет рисовать на экране.
 
 | Кнопка | Действие |
 |---|---|
@@ -314,8 +348,8 @@ tail -f /var/log/marusya-agent.log
 | `-bt_pair_command` | утилита сопряжения: `auto` (по умолчанию) — `bt-pair`, если он есть в PATH; можно указать `bt-pair {timeout}`; пустая строка — встроенный сценарий через `bluetoothctl` |
 | `-mpv_socket` | сокет mpv; пустое значение отключает управление музыкой |
 | `-vad_threshold_db`, `-vad_silence` | чувствительность VAD и длина паузы, завершающей фразу |
-| `-ringled`, `-ringled_brightness` | LED-кольцо (`auto` — `ringled` из PATH, пустое значение отключает). Слушает — синяя вспышка волной от кнопки мута, думает — фиолетовая «комета» крутится по кольцу, отвечает — зелёное дыхание, ошибка — два красных мигания, нет связи — тусклый красный. Мут — красный растекается от кнопки MICMUTE на всё кольцо и уходит обратно в неё; громкость — белая дуга на полторы секунды |
-| `-ring_driver` | `spi` — кадры прямо в `/dev/spidev0.0` (плавные анимации, 30 к/с), `ringled` — один запуск утилиты на кадр, `auto` (по умолчанию) — `spi`, если доступен |
+| `-ring`, `-ringled_brightness` | LED-кольцо: `auto` (по умолчанию) включает его на VK Капсуле Мини, которую агент узнаёт по device tree (`vk,capsula-mini`), `on` включает всегда, пустое значение отключает. Слушает — синяя вспышка волной от кнопки мута, думает — фиолетовая «комета» крутится по кольцу, отвечает — зелёное дыхание, ошибка — два красных мигания, нет связи — тусклый красный. Мут — красный растекается от кнопки MICMUTE на всё кольцо и уходит обратно в неё; громкость — белая дуга на полторы секунды |
+| `-ring_dev` | spidev-узел кольца, по умолчанию `/dev/spidev0.0`; кадры пишутся прямо в него, 30 к/с |
 | `-ring_demo` | показать все анимации кольца по очереди и выйти (остановите сервис перед запуском) |
 | `-follow_up`, `-duck_media`, `-earcons` | поведение диалога |
 
@@ -429,6 +463,69 @@ marusya-ask -server http://192.168.31.80:8080 -token "$MARUSYA_AUTH_TOKEN" -list
 - если вопросов нет — «закончил:» и первую фразу. Чтобы в этом случае колонка молчала, добавьте `-on_done=false`.
 
 Код, ссылки и markdown выбрасываются. Ответ передаётся Claude как распознанная речь, с пометкой, что возможны ошибки распознавания.
+
+### Spotify
+
+Если Spotify настроен, музыка по умолчанию идёт из него: «Маруся, включи Кино — Группа
+крови», «поставь альбом Nevermind». Модель вызывает серверный навык `spotify_play`. Сервер
+ищет музыку в каталоге Spotify и отправляет колонке ссылку `spotify:…`, а агент открывает
+её в spotifyd через MPRIS. Если в Spotify такого нет или spotifyd не отвечает, то же самое
+само включается с YouTube. Видео, подкасты и «включи с ютуба» по-прежнему идут в YouTube.
+Пауза, «дальше» и пауза на время разговора работают как раньше.
+
+Сервер ищет от имени приложения (client credentials), без аккаунтов пользователей,
+поэтому одного приложения хватает на любое число колонок. Играет колонка с того
+аккаунта, в который залогинен её spotifyd. Нужен Premium.
+
+**На сервере** создайте приложение на
+[developer.spotify.com](https://developer.spotify.com/dashboard) (Web API) и задайте
+в `configs/server.env`:
+
+```
+MARUSYA_SPOTIFY_CLIENT_ID=…
+MARUSYA_SPOTIFY_CLIENT_SECRET=…
+```
+
+**На колонке** нужен spotifyd 0.4+ с MPRIS (`apk add spotifyd playerctl dbus`). Графической
+сессии там нет, поэтому spotifyd работает на системной шине D-Bus. `/etc/spotifyd.conf`:
+
+```toml
+[global]
+device_name = "Marusya"
+backend = "alsa"
+device = "default"          # через asound.conf, вместе с эквалайзером
+use_mpris = true
+dbus_type = "system"
+cache_path = "/var/cache/spotifyd"   # здесь сохраняется вход
+```
+
+Разрешение для spotifyd на системной шине, `/etc/dbus-1/system.d/spotifyd.conf`:
+
+```xml
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="root">
+    <allow own_prefix="org.mpris.MediaPlayer2.spotifyd"/>
+    <allow own_prefix="rs.spotifyd"/>
+  </policy>
+  <policy context="default">
+    <allow send_destination_prefix="org.mpris.MediaPlayer2.spotifyd"/>
+    <allow send_destination_prefix="rs.spotifyd"/>
+  </policy>
+</busconfig>
+```
+
+Войти один раз: `spotifyd authenticate` или выбрать «Marusya» в приложении Spotify в той
+же сети Wi-Fi. Вход сохраняется в `cache_path`, после перезагрузки spotifyd логинится сам.
+Сервис: скопируйте `deploy/agent/spotifyd.openrc` в `/etc/init.d/spotifyd`, затем
+`rc-update add dbus default && rc-update add spotifyd default`.
+
+spotifyd 0.4 показывает плеер MPRIS, только пока он активное устройство Spotify Connect.
+Поэтому агент перед открытием ссылки `spotify:` сам делает его активным
+(`rs.spotifyd.Controls.TransferPlayback`), и выбирать колонку в приложении не нужно.
+
+Ищутся только публичные плейлисты: личные плейлисты пользователя серверу не видны.
 
 ### Home Assistant
 

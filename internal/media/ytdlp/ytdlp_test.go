@@ -59,7 +59,7 @@ func TestOpenSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tr.Audio.Close()
-	if tr.Title != "ytsearch1:-rf песня" {
+	if tr.Title != "ytsearch5:-rf песня" {
 		t.Errorf("title = %q; the query must follow --", tr.Title)
 	}
 	if tr.Duration != 212500*time.Millisecond {
@@ -69,6 +69,29 @@ func TestOpenSearch(t *testing.T) {
 	if err != nil || string(b) != "audio-bytes" {
 		t.Errorf("audio = %q, %v", b, err)
 	}
+}
+
+// The filtered search finds only an instrumental: not found, no minus.
+// An exit of 101 (--max-downloads reached) is no failure.
+func TestOpenSearchVariants(t *testing.T) {
+	s := fakes(t, `for a; do last="$a"; done
+case "$*" in *--match-filters*) exit 0;; esac
+printf '%s\t1\n' "$last" > /dev/fd/3
+printf 'audio-bytes'
+exit 101
+`)
+	if _, err := s.Open(context.Background(), media.Request{Query: "песня"}); !errors.Is(err, media.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+	// Asked for an instrumental: no filter.
+	tr, err := s.Open(context.Background(), media.Request{Query: "песня минус"})
+	if err != nil || tr.Title != "ytsearch1:песня минус" {
+		t.Fatalf("%v %v", tr, err)
+	}
+	if b, err := io.ReadAll(tr.Audio); err != nil || string(b) != "audio-bytes" {
+		t.Errorf("audio = %q, %v", b, err)
+	}
+	tr.Audio.Close()
 }
 
 func TestOpenNotFound(t *testing.T) {

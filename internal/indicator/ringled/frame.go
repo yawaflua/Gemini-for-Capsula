@@ -40,7 +40,7 @@ func ParseRGB(s string) (RGB, error) {
 
 func (c RGB) String() string { return fmt.Sprintf("%02x%02x%02x", c.R, c.G, c.B) }
 
-// The wire format, as the firmware's ringled sends it (WS2812-style chain
+// The wire format (WS2812-style chain
 // on the meson-spicc SPI controller at 3.34 MHz):
 //
 //   - every data bit is four SPI bits, 1000 for 0 and 1100 for 1, so a byte
