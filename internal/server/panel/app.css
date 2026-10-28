@@ -248,6 +248,7 @@ input[type=color] { width: 48px; height: 40px; padding: 4px; border-radius: var(
   padding: 16px; margin-bottom: 16px; box-shadow: var(--md-elev-1);
 }
 .cards2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.cards2 { margin-bottom: 16px; }
 .cards2 .card { margin-bottom: 0; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 .grow { flex: 1; min-width: 140px; display: flex; flex-direction: column; }
@@ -295,6 +296,20 @@ input[type=color] { width: 48px; height: 40px; padding: 4px; border-radius: var(
 
 .say { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
 .say input { flex: 1; padding-block: 11px; border-radius: var(--md-shape-full); padding-inline: 20px; }
+/* Alarm form: time, repeat, volume and music share a wrapping row. A plain
+   .say row lets the full-width select squeeze the inputs to nothing. */
+.alarm-form select { height: 48px; padding-inline: 16px; border-radius: var(--md-shape-full); }
+.alarm-form .btn { height: 48px; }
+@media (min-width: 761px) {
+  .alarm-form { flex-wrap: wrap; }
+  .alarm-form > * { flex: 1 1 160px; }
+  .alarm-form input[type=time] { flex: 0 1 140px; }
+  .alarm-form input[type=number] { flex: 0 1 160px; }
+  .alarm-form [data-f=a-music] { flex: 2 1 220px; }
+  .alarm-form select { width: auto; }
+  .alarm-form .btn { flex: none; }
+}
+.settings .hint + .grid2 { margin-top: 16px; }
 .now { margin: 0 0 4px; min-height: 20px; overflow-wrap: anywhere; }
 .media { margin-top: 8px; }
 .color { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--md-on-surface-variant); }
@@ -395,4 +410,10 @@ body:not(.tunable) .tunable { display: none; }
   .bubble { max-width: 100%; }
   .toast { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
   .settings { padding: 16px; }
+}
+/* Narrow phones: the status chip keeps only its dot, so the top bar fits. */
+@media (max-width: 420px) {
+  .topbar { gap: 8px; }
+  #live-text { display: none; }
+  .live { padding: 0 11px; }
 }
