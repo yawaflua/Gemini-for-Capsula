@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -183,5 +185,32 @@ func TestRingPriorities(t *testing.T) {
 	r.Close()
 	if got := s.frames[len(s.frames)-1]; got != (Frame{}) {
 		t.Errorf("after Close: %v, want off", got)
+	}
+}
+
+func TestDetect(t *testing.T) {
+	dir := t.TempDir()
+	defer func(c, d string) { compatiblePath, spiDriver = c, d }(compatiblePath, spiDriver)
+	compatiblePath = filepath.Join(dir, "compatible")
+	spiDriver = filepath.Join(dir, "meson-spicc")
+
+	for _, tc := range []struct {
+		compatible string
+		driver     bool
+		want       bool
+	}{
+		{"vk,capsula-mini\x00amlogic,a113d\x00amlogic,meson-axg\x00", true, true},
+		{"vk,capsula-mini\x00amlogic,a113d\x00", false, false},
+		{"amlogic,s400\x00amlogic,a113d\x00amlogic,meson-axg\x00", true, false},
+		{"", true, false},
+	} {
+		os.RemoveAll(spiDriver)
+		if tc.driver {
+			os.Mkdir(spiDriver, 0o755)
+		}
+		os.WriteFile(compatiblePath, []byte(tc.compatible), 0o644)
+		if got := Detect(); got != tc.want {
+			t.Errorf("Detect() with %q, driver %v = %v, want %v", tc.compatible, tc.driver, got, tc.want)
+		}
 	}
 }

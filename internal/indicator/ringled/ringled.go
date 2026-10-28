@@ -14,8 +14,8 @@
 
 // Package ringled drives the 12-pixel LED ring of the speaker. [Ring] is
 // both an [indicator.Indicator] and a [controller.Light] (night light), and
-// renders animations frame by frame on a [Strip]: spidev directly, or the
-// firmware's ringled utility.
+// renders animations frame by frame on a [Strip], written straight to the
+// kernel's spidev.
 package ringled
 
 import (
@@ -289,7 +289,7 @@ var spiDriver = "/sys/bus/platform/drivers/meson-spicc"
 
 // bindSPI binds every unbound meson-spicc controller. The controller is
 // rebound to reprogram the SPI clock; if that is interrupted in between
-// (ringled killed, the agent restarted), it stays unbound and the ring
+// (the agent killed or restarted), it stays unbound and the ring
 // stops working.
 func bindSPI() ([]string, error) {
 	devs, _ := filepath.Glob("/sys/bus/platform/devices/*")
