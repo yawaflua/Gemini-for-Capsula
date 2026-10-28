@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -59,6 +60,9 @@ type Config struct {
 	Synthesizer speech.Synthesizer
 	// BaseURL overrides the API endpoint (for tests and proxies).
 	BaseURL string
+	// HTTPClient sends the API requests, e.g. through a proxy; nil uses
+	// the SDK default.
+	HTTPClient *http.Client
 	// Logger receives pipeline errors; optional.
 	Logger *slog.Logger
 }
@@ -101,6 +105,9 @@ func New(cfg Config) (*Provider, error) {
 	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	if cfg.HTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
 	log := cfg.Logger
 	if log == nil {

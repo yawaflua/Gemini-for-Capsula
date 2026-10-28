@@ -37,9 +37,12 @@ import (
 	"time"
 	_ "time/tzdata" // time zones for the time skill on minimal images
 
+	"github.com/gorilla/websocket"
+
 	"github.com/yawaflua/marusya-gemini/internal/config"
 	"github.com/yawaflua/marusya-gemini/internal/logging"
 	"github.com/yawaflua/marusya-gemini/internal/media/ytdlp"
+	"github.com/yawaflua/marusya-gemini/internal/netproxy"
 	"github.com/yawaflua/marusya-gemini/internal/openmeteo"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
 	"github.com/yawaflua/marusya-gemini/internal/provider/claude"
@@ -75,6 +78,9 @@ var (
 	mediaOn    = flag.Bool("media", config.EnvBool("MARUSYA_MEDIA", true), "Let speakers play YouTube and other sites (GET /v1/media). Needs yt-dlp and ffmpeg on the server.")
 	ytdlpArgs  = flag.String("ytdlp_args", config.Env("MARUSYA_YTDLP_ARGS", ""), `Extra yt-dlp arguments, e.g. "--js-runtimes node" or "--cookies /data/cookies.txt".`)
 	alarmsFile = flag.String("alarms_file", config.Env("MARUSYA_ALARMS_FILE", ""), "JSON file with the alarms and timers of the speakers. Empty keeps them in memory.")
+	proxyAddr  = flag.String("proxy", config.Env("MARUSYA_PROXY", ""), `Proxy for the outgoing requests of the server (Gemini, Claude, Spotify, Open-Meteo, Home Assistant, yt-dlp): http://host:3128, https://user:pass@host, socks5://host:1080 or socks5h://host:1080. Empty uses $HTTPS_PROXY / $HTTP_PROXY.`)
+	gemProxy   = flag.String("gemini_proxy", config.Env("MARUSYA_GEMINI_PROXY", ""), `Proxy for Gemini only (REST and Live API), overriding -proxy; "direct" connects Gemini without a proxy. Empty uses -proxy.`)
+	noProxy    = flag.String("no_proxy", config.Env("MARUSYA_NO_PROXY", netproxy.DefaultNoProxy), "Comma separated hosts, .domains and CIDR ranges reached without -proxy / -gemini_proxy. Loopback and single-label hosts (Docker services) are always direct.")
 	settings   = flag.String("settings_file", config.Env("MARUSYA_SETTINGS_FILE", ""), "File that keeps the settings changed in the web panel across restarts. Empty keeps them in memory.")
 
 	providerName = flag.String("provider", config.Env("MARUSYA_PROVIDER", "gemini"), `Model backend: "gemini" (Live API, speech to speech), "claude" (Claude + Gemini speech recognition/TTS) or "echo" (loopback, for testing).`)
@@ -126,8 +132,31 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sp := newSpeech(ctx, log)
-	p, err := newProvider(ctx, sp, log)
+	px, err := netproxy.Parse(*proxyAddr, *noProxy)
+	if err != nil {
+		return err
+	}
+	gpx := px
+	if *gemProxy != "" {
+		if gpx, err = netproxy.Parse(*gemProxy, *noProxy); err != nil {
+			return err
+		}
+	}
+	if px != nil {
+		log.Info("outgoing requests go through a proxy", "proxy", px, "no_proxy", *noProxy)
+	}
+	if gpx != px {
+		log.Info("Gemini requests go through a proxy", "proxy", gpx)
+	}
+	if gpx != nil {
+		// genai dials the Live API with this dialer; gorilla/websocket
+		// itself cannot tunnel through an https:// proxy.
+		websocket.DefaultDialer.Proxy = nil
+		websocket.DefaultDialer.NetDialContext = gpx.DialContext
+	}
+
+	sp := newSpeech(ctx, gpx, log)
+	p, err := newProvider(ctx, sp, gpx, px, log)
 	if err != nil {
 		return err
 	}
@@ -151,10 +180,16 @@ func run() error {
 	var set skills.Set
 	if *enSkills {
 		geo := &openmeteo.Client{}
+		if px != nil {
+			geo.HTTP = px.Client(10 * time.Second)
+		}
 		set = skills.Set{&clock.Skill{Geo: geo}, &weather.Skill{Geo: geo}}
 	}
 	if *haURL != "" {
 		ha := &homeassistant.Client{URL: *haURL, Token: *haToken}
+		if px != nil {
+			ha.HTTP = px.Client(0)
+		}
 		if *haDomains != "" {
 			ha.Domains = strings.FieldsFunc(*haDomains, func(r rune) bool { return r == ',' || r == ' ' })
 		}
@@ -163,6 +198,9 @@ func run() error {
 	}
 	if *spID != "" {
 		sp := &spotify.Client{ClientID: *spID, ClientSecret: *spSecret, Market: *spMarket}
+		if px != nil {
+			sp.HTTP = px.Client(0)
+		}
 		set = append(set, sp.Skills()...)
 		log.Info("Spotify skill enabled", "market", cmp.Or(*spMarket, "any"))
 	}
@@ -201,7 +239,7 @@ func run() error {
 		}
 	}
 	if *mediaOn {
-		src := &ytdlp.Source{Args: strings.Fields(*ytdlpArgs), Logger: log}
+		src := &ytdlp.Source{Args: ytdlpProxyArgs(px, strings.Fields(*ytdlpArgs)), Logger: log}
 		if err := src.Available(); err != nil {
 			log.Warn("media playback disabled", "err", err)
 		} else {
@@ -249,14 +287,18 @@ func run() error {
 // newSpeech returns Gemini speech recognition and synthesis, used by the
 // claude provider and by announcements (POST /v1/ask); nil without a Gemini
 // Developer API key.
-func newSpeech(ctx context.Context, log *slog.Logger) *geminispeech.Speech {
+func newSpeech(ctx context.Context, gpx *netproxy.Proxy, log *slog.Logger) *geminispeech.Speech {
 	if *vertex {
 		log.Info("announcements (/v1/ask) are disabled: Gemini speech needs a Developer API key, not Vertex AI")
 		return nil
 	}
-	sp, err := geminispeech.New(ctx, geminispeech.Config{
+	cfg := geminispeech.Config{
 		APIKey: *apiKey, STTModel: *sttModel, TTSModel: *ttsModel, Voice: *voice,
-	})
+	}
+	if gpx != nil {
+		cfg.Transport = gpx.Transport()
+	}
+	sp, err := geminispeech.New(ctx, cfg)
 	if err != nil {
 		log.Warn("Gemini speech unavailable; announcements (/v1/ask) are disabled", "err", err)
 		return nil
@@ -264,10 +306,10 @@ func newSpeech(ctx context.Context, log *slog.Logger) *geminispeech.Speech {
 	return sp
 }
 
-func newProvider(ctx context.Context, sp *geminispeech.Speech, log *slog.Logger) (provider.Provider, error) {
+func newProvider(ctx context.Context, sp *geminispeech.Speech, gpx, px *netproxy.Proxy, log *slog.Logger) (provider.Provider, error) {
 	switch *providerName {
 	case "gemini":
-		return gemini.New(ctx, gemini.Config{
+		cfg := gemini.Config{
 			APIKey:       *apiKey,
 			VertexAI:     *vertex,
 			Project:      *project,
@@ -275,12 +317,16 @@ func newProvider(ctx context.Context, sp *geminispeech.Speech, log *slog.Logger)
 			Model:        *model,
 			Voice:        *voice,
 			GoogleSearch: *googleSearch,
-		})
+		}
+		if gpx != nil {
+			cfg.Transport = gpx.Transport()
+		}
+		return gemini.New(ctx, cfg)
 	case "claude":
 		if sp == nil {
 			return nil, errors.New("-provider claude needs Gemini speech (a Gemini Developer API key)")
 		}
-		return claude.New(claude.Config{
+		cfg := claude.Config{
 			APIKey:      *claudeKey,
 			Model:       *claudeModel,
 			Effort:      *claudeEffort,
@@ -288,11 +334,32 @@ func newProvider(ctx context.Context, sp *geminispeech.Speech, log *slog.Logger)
 			Recognizer:  sp,
 			Synthesizer: sp,
 			Logger:      log,
-		})
+		}
+		if px != nil {
+			cfg.HTTPClient = px.Client(0)
+		}
+		return claude.New(cfg)
 	case "echo":
 		return echo.Provider{}, nil
 	}
 	return nil, fmt.Errorf("unknown provider %q", *providerName)
+}
+
+// ytdlpProxyArgs adds --proxy to the yt-dlp arguments, unless they set one.
+func ytdlpProxyArgs(px *netproxy.Proxy, args []string) []string {
+	if px == nil {
+		return args
+	}
+	for _, a := range args {
+		if a == "--proxy" || strings.HasPrefix(a, "--proxy=") {
+			return args
+		}
+	}
+	addr := "" // "direct": yt-dlp ignores $HTTPS_PROXY with an empty --proxy
+	if u := px.URL(); u != nil {
+		addr = u.String()
+	}
+	return append([]string{"--proxy", addr}, args...)
 }
 
 // localZone returns the IANA name of this machine's time zone, if known.

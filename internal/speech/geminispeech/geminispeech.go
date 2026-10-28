@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 
@@ -47,6 +48,9 @@ type Config struct {
 	TTSModel string
 	// Voice is a prebuilt voice name, e.g. "Kore".
 	Voice string
+	// Transport carries the REST requests, e.g. through a proxy; nil uses
+	// the default.
+	Transport http.RoundTripper
 }
 
 // Speech is a Gemini backed [speech.Recognizer] and [speech.Synthesizer].
@@ -71,7 +75,11 @@ func New(ctx context.Context, cfg Config) (*Speech, error) {
 	if cfg.TTSModel == "" {
 		cfg.TTSModel = DefaultTTSModel
 	}
-	c, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: cfg.APIKey, Backend: genai.BackendGeminiAPI})
+	cc := &genai.ClientConfig{APIKey: cfg.APIKey, Backend: genai.BackendGeminiAPI}
+	if cfg.Transport != nil {
+		cc.HTTPClient = &http.Client{Transport: cfg.Transport}
+	}
+	c, err := genai.NewClient(ctx, cc)
 	if err != nil {
 		return nil, fmt.Errorf("geminispeech: %w", err)
 	}

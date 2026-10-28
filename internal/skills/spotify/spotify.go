@@ -65,6 +65,10 @@ type Client struct {
 	// found. Empty searches every market.
 	Market string
 
+	// HTTP overrides the HTTP client under the OAuth one, e.g. to use a
+	// proxy.
+	HTTP *http.Client
+
 	// API and Token override the endpoints in tests.
 	API   string
 	Token string
@@ -85,7 +89,11 @@ func (c *Client) http() *http.Client {
 			AuthStyle:    oauth2.AuthStyleInHeader,
 		}
 		// The token source outlives any request: refresh with a context of its own.
-		c.hc = conf.Client(context.Background())
+		ctx := context.Background()
+		if c.HTTP != nil {
+			ctx = context.WithValue(ctx, oauth2.HTTPClient, c.HTTP)
+		}
+		c.hc = conf.Client(ctx)
 	})
 	return c.hc
 }

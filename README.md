@@ -247,6 +247,30 @@ ANTHROPIC_API_KEY=... GEMINI_API_KEY=... ./bin/marusya-server -provider claude \
 возвращает старое поведение.
 Для работы через интернет используйте `-tls_cert/-tls_key` (wss://) или reverse proxy.
 
+### Прокси
+
+Если Gemini недоступен из вашей страны или сервер выходит в интернет только через прокси,
+задайте `-proxy` (`MARUSYA_PROXY`). Поддерживаются `http://`, `https://` (TLS до прокси),
+`socks5://` и `socks5h://` (DNS на стороне прокси), логин и пароль пишутся в адресе:
+
+```bash
+MARUSYA_PROXY=socks5h://user:pass@proxy.example.com:1080 ./bin/marusya-server ...
+```
+
+Через прокси идут все исходящие запросы сервера: Gemini (REST и Live API), Claude,
+Spotify, Open-Meteo, Home Assistant и yt-dlp (ему передаётся `--proxy`, если его нет
+в `MARUSYA_YTDLP_ARGS`; для `https://`-прокси yt-dlp нужен модуль `requests`).
+
+- `-gemini_proxy` (`MARUSYA_GEMINI_PROXY`) задаёт отдельный прокси только для Gemini.
+  Значение `direct` подключает Gemini напрямую, даже если задан `-proxy`.
+- `-no_proxy` (`MARUSYA_NO_PROXY`) перечисляет адреса, к которым сервер ходит напрямую:
+  хосты, домены (`.example.com`) и подсети CIDR. По умолчанию это частные сети
+  (`192.168.0.0/16`, `10.0.0.0/8`, …) и домены `.local`, `.lan`, `.home.arpa`, поэтому
+  Home Assistant в домашней сети работает без прокси. `localhost` и имена без точки
+  (сервисы Docker вроде `marusya-wake`, `homeassistant`) всегда идут напрямую.
+
+Без `-proxy` сервер, как и раньше, учитывает `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`.
+
 ## Запуск на колонке (Alpine Linux)
 
 Нужен root по ssh. Агент — статический бинарник, поэтому musl ему не мешает. Зависимости ставятся из apk

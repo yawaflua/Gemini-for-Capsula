@@ -21,8 +21,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 
+	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/httptransport"
 	"google.golang.org/genai"
 
 	"github.com/yawaflua/marusya-gemini/internal/models"
@@ -52,6 +55,10 @@ type Config struct {
 	Voice string
 	// GoogleSearch enables grounding with Google Search.
 	GoogleSearch bool
+	// Transport carries the REST requests, e.g. through a proxy; nil uses
+	// the default. The Live API WebSocket is dialed by
+	// websocket.DefaultDialer of github.com/gorilla/websocket instead.
+	Transport http.RoundTripper
 }
 
 // Provider is a Gemini Live API backed [provider.Provider].
@@ -80,11 +87,46 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 		cc = &genai.ClientConfig{Backend: genai.BackendVertexAI, Project: cfg.Project, Location: cfg.Location}
 		cc.HTTPOptions.APIVersion = "v1beta1"
 	}
+	if cfg.Transport != nil {
+		if err := setTransport(ctx, cc, cfg.Transport); err != nil {
+			return nil, fmt.Errorf("gemini: %w", err)
+		}
+	}
 	client, err := genai.NewClient(ctx, cc)
 	if err != nil {
 		return nil, fmt.Errorf("gemini: create client: %w", err)
 	}
 	return &Provider{cfg: cfg, client: client, model: cfg.Model, voice: cfg.Voice}, nil
+}
+
+// setTransport makes cc send its requests through t. A Vertex AI client
+// also needs the credentials genai would otherwise add to its own client.
+func setTransport(ctx context.Context, cc *genai.ClientConfig, t http.RoundTripper) error {
+	if cc.Backend != genai.BackendVertexAI {
+		cc.HTTPClient = &http.Client{Transport: t}
+		return nil
+	}
+	cred, err := credentials.DetectDefault(&credentials.DetectOptions{
+		Scopes: []string{"https://www.googleapis.com/auth/cloud-platform"},
+		Client: &http.Client{Transport: t},
+	})
+	if err != nil {
+		return fmt.Errorf("find default credentials: %w", err)
+	}
+	quota, err := cred.QuotaProjectID(ctx)
+	if err != nil {
+		return fmt.Errorf("get quota project ID: %w", err)
+	}
+	hc, err := httptransport.NewClient(&httptransport.Options{
+		Credentials:      cred,
+		Headers:          http.Header{"X-Goog-User-Project": []string{quota}},
+		BaseRoundTripper: t,
+	})
+	if err != nil {
+		return fmt.Errorf("create HTTP client: %w", err)
+	}
+	cc.Credentials, cc.HTTPClient = cred, hc
+	return nil
 }
 
 // Tuning implements [provider.Tuner].
