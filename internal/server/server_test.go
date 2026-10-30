@@ -15,6 +15,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,6 +31,7 @@ import (
 
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
+	"github.com/yawaflua/marusya-gemini/internal/selfupdate"
 	"github.com/yawaflua/marusya-gemini/internal/transport"
 )
 
@@ -170,6 +173,60 @@ func TestAgentDownload(t *testing.T) {
 	}
 	if code, _ := get("/v1/agent/riscv64", "x"); code != 404 {
 		t.Errorf("missing arch = %d, want 404", code)
+	}
+}
+
+// TestAgentSelfUpdate checks the agent's update against the server: a
+// different binary is downloaded over the running one, the same one is
+// answered with 304.
+func TestAgentSelfUpdate(t *testing.T) {
+	dir := t.TempDir()
+	served := filepath.Join(dir, "marusya-agent-linux-"+runtime.GOARCH)
+	if err := os.WriteFile(served, []byte("new agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	srv := httptest.NewServer(New(Config{Provider: &toolProvider{}, AuthToken: "x", AgentDir: dir, Logger: slog.New(slog.NewTextHandler(&log, nil))}))
+	defer srv.Close()
+
+	exe := filepath.Join(t.TempDir(), "marusya-agent")
+	os.WriteFile(exe, []byte("old agent"), 0o755)
+	agentURL, err := selfupdate.AgentURL("ws" + strings.TrimPrefix(srv.URL, "http") + transport.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &selfupdate.Updater{URL: agentURL, Token: "x", Exe: exe}
+	if ok, err := up.Check(context.Background()); !ok || err != nil {
+		t.Fatalf("first check = %v, %v; want an update", ok, err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "new agent" {
+		t.Errorf("binary %q after the update", b)
+	}
+	if st, _ := os.Stat(exe); st.Mode().Perm() != 0o755 {
+		t.Errorf("mode %v", st.Mode())
+	}
+	if n := strings.Count(log.String(), "serving agent binary"); n != 1 {
+		t.Errorf("%d downloads logged, want 1", n)
+	}
+	// The same binary: 304, nothing logged above debug.
+	if ok, err := up.Check(context.Background()); ok || err != nil {
+		t.Fatalf("second check = %v, %v; want up to date", ok, err)
+	}
+	if n := strings.Count(log.String(), "serving agent binary"); n != 1 {
+		t.Errorf("%d downloads logged after an up-to-date check", n)
+	}
+	// A new build on the server is picked up (the hash cache follows it).
+	os.WriteFile(served, []byte("newer agent!"), 0o755)
+	os.Chtimes(served, time.Now(), time.Now().Add(time.Second))
+	if ok, err := (&selfupdate.Updater{URL: agentURL, Token: "x", Exe: exe}).Check(context.Background()); !ok || err != nil {
+		t.Fatalf("check after a new build = %v, %v", ok, err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "newer agent!" {
+		t.Errorf("binary %q after the second update", b)
+	}
+	// A wrong token changes nothing.
+	if ok, err := (&selfupdate.Updater{URL: agentURL, Token: "bad", Exe: exe}).Check(context.Background()); ok || err == nil {
+		t.Errorf("wrong token = %v, %v", ok, err)
 	}
 }
 

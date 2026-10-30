@@ -23,6 +23,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -36,6 +37,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/plugin"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
 	"github.com/yawaflua/marusya-gemini/internal/provider/registry"
+	"github.com/yawaflua/marusya-gemini/internal/selfupdate"
 	"github.com/yawaflua/marusya-gemini/internal/skills"
 	"github.com/yawaflua/marusya-gemini/internal/skills/alarm"
 	"github.com/yawaflua/marusya-gemini/internal/skills/spotify"
@@ -176,7 +178,8 @@ type Server struct {
 	plmu        sync.Mutex
 	pluginTools string // names of the plugin tools, see pluginsChanged
 
-	logins spotifyLogins // Spotify sign-ins started from the panel
+	logins      spotifyLogins // Spotify sign-ins started from the panel
+	agentHashes fileHashes    // of the agent binaries, see handleAgent
 
 	spmu         sync.Mutex
 	spotifyEnv   spotifyCreds // as started, see handleResetSpotify
@@ -285,9 +288,60 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := filepath.Join(s.cfg.AgentDir, "marusya-agent-linux-"+arch)
-	s.cfg.Logger.Info("serving agent binary", "arch", arch, "remote", r.RemoteAddr)
+	// The hash as the ETag lets speakers check for a new agent on every
+	// reconnect for the cost of a 304, see package selfupdate.
+	hash, err := s.agentHashes.get(path)
+	if errors.Is(err, os.ErrNotExist) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	etag := selfupdate.ETag(hash)
+	if r.Header.Get("If-None-Match") == etag {
+		s.cfg.Logger.Debug("agent binary up to date", "arch", arch, "remote", r.RemoteAddr)
+	} else {
+		s.cfg.Logger.Info("serving agent binary", "arch", arch, "remote", r.RemoteAddr, "sha256", hash[:12])
+	}
+	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeFile(w, r, path)
+}
+
+// fileHashes caches the SHA-256 of files by path, size and modification
+// time.
+type fileHashes struct {
+	mu sync.Mutex
+	m  map[string]fileHash
+}
+
+type fileHash struct {
+	size int64
+	mod  time.Time
+	hash string
+}
+
+func (fh *fileHashes) get(path string) (string, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	fh.mu.Lock()
+	defer fh.mu.Unlock()
+	if c, ok := fh.m[path]; ok && c.size == st.Size() && c.mod.Equal(st.ModTime()) {
+		return c.hash, nil
+	}
+	hash, err := selfupdate.FileHash(path)
+	if err != nil {
+		return "", err
+	}
+	if fh.m == nil {
+		fh.m = map[string]fileHash{}
+	}
+	fh.m[path] = fileHash{size: st.Size(), mod: st.ModTime(), hash: hash}
+	return hash, nil
 }
 
 // handleMedia streams the sound of a video or stream as PCM, see

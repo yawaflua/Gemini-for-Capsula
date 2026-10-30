@@ -34,6 +34,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,6 +59,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/logging"
 	"github.com/yawaflua/marusya-gemini/internal/media"
 	"github.com/yawaflua/marusya-gemini/internal/models"
+	"github.com/yawaflua/marusya-gemini/internal/selfupdate"
 	"github.com/yawaflua/marusya-gemini/internal/sensor/light"
 	"github.com/yawaflua/marusya-gemini/internal/surface"
 	"github.com/yawaflua/marusya-gemini/internal/touchkeys"
@@ -103,6 +105,7 @@ var (
 	followUp      = flag.Bool("follow_up", true, "Listen for a follow-up question after each reply without the wake word.")
 	serverStreams = flag.Bool("server_streams", config.EnvBool("MARUSYA_SERVER_STREAMS", true), "Play YouTube and other http(s) streams decoded by the server (it needs yt-dlp and ffmpeg).")
 	duckMedia     = flag.Bool("duck_media", true, "Pause music while the assistant is active.")
+	autoUpdate    = flag.Bool("auto_update", config.EnvBool("MARUSYA_AUTO_UPDATE", true), "On every connection, compare the agent binary with the server's (/v1/agent/<arch>); if it differs, download it over this one and restart when idle (supervise-daemon starts the new one).")
 	pluginsDir    = flag.String("plugins_dir", config.Env("MARUSYA_PLUGINS_DIR", ""), "Directory of plugins that run on the speaker, one subdirectory with a plugin.json each (see pkg/pluginsdk). Empty disables plugins.")
 	airplayOn     = flag.Bool("airplay", config.EnvBool("MARUSYA_AIRPLAY", true), "Control AirPlay music played to the speaker (shairport-sync on the system D-Bus): pause, next track, status and ducking go to the phone while it plays.")
 
@@ -210,6 +213,9 @@ func run() error {
 	slog.SetDefault(log)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, restart := context.WithCancel(ctx)
+	defer restart()
+	var updated atomic.Bool
 
 	id := *deviceID
 	if id == "" {
@@ -388,7 +394,15 @@ func run() error {
 	if plugins != nil {
 		deps.Plugins = plugins
 	}
-	a := agent.New(agent.Config{
+	var a *agent.Agent
+	var onConnected func(context.Context)
+	if *autoUpdate {
+		onConnected = autoUpdater(log, func() bool { return a.Busy() }, func() {
+			updated.Store(true)
+			restart()
+		})
+	}
+	a = agent.New(agent.Config{
 		DeviceID:  id,
 		ServerURL: *serverURL,
 		Token:     *token,
@@ -399,6 +413,8 @@ func run() error {
 		Earcons:   *earcons,
 		FollowUp:  *followUp,
 		DuckMedia: *duckMedia,
+
+		OnConnected: onConnected,
 	}, log, deps)
 	if plugins != nil {
 		plugins.start(ctx, a)
@@ -424,7 +440,53 @@ func run() error {
 		defer display.Close()
 	}
 	log.Info("starting agent", "version", version, "device", id, "server", *serverURL, "capabilities", len(dispatcher.Capabilities()))
-	return a.Run(ctx)
+	if err := a.Run(ctx); err != nil {
+		return err
+	}
+	if updated.Load() {
+		// A non-zero status makes sure the supervisor starts the new binary.
+		return selfupdate.ErrUpdated
+	}
+	return nil
+}
+
+// autoUpdater returns the agent's OnConnected: it checks the server for a
+// new agent binary and, once downloaded, calls restart when the speaker is
+// not busy.
+func autoUpdater(log *slog.Logger, busy func() bool, restart func()) func(context.Context) {
+	agentURL, err := selfupdate.AgentURL(*serverURL)
+	if err != nil {
+		log.Warn("auto update disabled", "err", err)
+		return nil
+	}
+	up := &selfupdate.Updater{URL: agentURL, Token: *token}
+	var running atomic.Bool
+	return func(ctx context.Context) {
+		if !running.CompareAndSwap(false, true) {
+			return
+		}
+		defer running.Store(false)
+		ok, err := up.Check(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Warn("checking for a new agent failed", "err", err)
+			}
+			return
+		}
+		if !ok {
+			log.Debug("agent is up to date")
+			return
+		}
+		log.Info("new agent downloaded from the server; restarting when idle")
+		// Not in the middle of a question; the binary on disk is already
+		// the new one, so a restart for any other reason picks it up too.
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for busy() {
+			<-t.C
+		}
+		restart()
+	}
 }
 
 // ringStrip returns the LED ring from the flags; nil disables the ring. The
