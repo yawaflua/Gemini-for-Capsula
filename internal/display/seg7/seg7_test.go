@@ -137,3 +137,57 @@ func TestNoSegmentLEDs(t *testing.T) {
 		t.Errorf("SetBrightness = %v, want ErrNoBrightness", err)
 	}
 }
+
+// TestNumberedLEDs covers builds without a line display, whose LEDs are
+// clock-led1..clock-led30: seven per digit, then the colon dots.
+func TestNumberedLEDs(t *testing.T) {
+	leds := filepath.Join(t.TempDir(), "leds")
+	for i := 1; i <= 30; i++ {
+		dir := filepath.Join(leds, fmt.Sprintf("clock-led%d", i))
+		os.MkdirAll(dir, 0o755)
+		for f, v := range map[string]string{"brightness": "0", "max_brightness": "255", "trigger": ""} {
+			os.WriteFile(filepath.Join(dir, f), []byte(v), 0o644)
+		}
+	}
+	old := ledsRoot
+	ledsRoot = leds
+	defer func() { ledsRoot = old }()
+
+	p, err := Open("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Dimmable() {
+		t.Error("numbered panel must be dimmable")
+	}
+	// Digit 1 segment a is clock-led1, digit 2 segment g is clock-led14,
+	// the nose is clock-led30.
+	if err := p.Show([4]byte{A, G, 0, 0}, true); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"clock-led1": "255", "clock-led14": "255", "clock-led2": "0", "clock-led30": "255", "clock-led29": "0",
+	} {
+		if got := level(t, leds, name); got != want {
+			t.Errorf("%s = %s, want %s", name, got, want)
+		}
+	}
+
+	// Text uses the built-in table: "1" lights b and c of the last digit.
+	if err := p.Text("1"); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"clock-led23": "255", "clock-led24": "255", "clock-led22": "0", "clock-led1": "0"} {
+		if got := level(t, leds, name); got != want {
+			t.Errorf("after Text: %s = %s, want %s", name, got, want)
+		}
+	}
+
+	// Upside down, the last digit's b and c are the first digit's e and f.
+	p.Rotate180()
+	for name, want := range map[string]string{"clock-led5": "255", "clock-led6": "255", "clock-led23": "0"} {
+		if got := level(t, leds, name); got != want {
+			t.Errorf("rotated: %s = %s, want %s", name, got, want)
+		}
+	}
+}

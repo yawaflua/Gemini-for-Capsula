@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -212,5 +213,56 @@ func TestDetect(t *testing.T) {
 		if got := Detect(); got != tc.want {
 			t.Errorf("Detect() with %q, driver %v = %v, want %v", tc.compatible, tc.driver, got, tc.want)
 		}
+	}
+}
+
+func TestLEDStrip(t *testing.T) {
+	dir := t.TempDir()
+	defer func(r string) { ledsRoot = r }(ledsRoot)
+	ledsRoot = dir
+	if LEDsAvailable() {
+		t.Fatal("LEDsAvailable without LEDs")
+	}
+	for i := 1; i <= Pixels*3; i++ {
+		d := filepath.Join(dir, "top-led"+strconv.Itoa(i))
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "brightness"), []byte("0"), 0o644)
+		os.WriteFile(filepath.Join(d, "max_brightness"), []byte("255"), 0o644)
+		os.WriteFile(filepath.Join(d, "trigger"), nil, 0o644)
+	}
+	if !LEDsAvailable() {
+		t.Fatal("LEDsAvailable = false")
+	}
+	s, err := NewLEDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f Frame
+	f[0] = RGB{R: 255}
+	f[11] = RGB{G: 10, B: 200}
+	if err := s.Write(f); err != nil {
+		t.Fatal(err)
+	}
+	read := func(n int) string {
+		b, _ := os.ReadFile(filepath.Join(dir, "top-led"+strconv.Itoa(n), "brightness"))
+		return string(b)
+	}
+	for n, want := range map[int]string{1: "255", 2: "0", 3: "0", 34: "0", 35: "10", 36: "200"} {
+		if got := read(n); got != want {
+			t.Errorf("top-led%d = %q, want %q", n, got, want)
+		}
+	}
+	// Unchanged channels are not written again.
+	os.WriteFile(filepath.Join(dir, "top-led1", "brightness"), []byte("x"), 0o644)
+	f[11].B = 0
+	if err := s.Write(f); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(1); got != "x" {
+		t.Errorf("unchanged top-led1 rewritten: %q", got)
+	}
+	// A regular file keeps the tail of a longer old value; sysfs does not.
+	if got, _ := strconv.Atoi(read(36)); got != 0 {
+		t.Errorf("top-led36 = %d, want 0", got)
 	}
 }

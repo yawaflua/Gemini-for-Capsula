@@ -103,6 +103,7 @@ var (
 
 	displayMode = flag.String("display", config.Env("MARUSYA_DISPLAY", "auto"), `7-segment face display: "auto", "on" or empty to disable.`)
 	displayDev  = flag.String("display_dev", "", "line-display sysfs directory with map_seg7; auto-detected if empty.")
+	displayRot  = flag.Bool("display_rotate", config.EnvBool("MARUSYA_DISPLAY_ROTATE", false), "Turn the face upside down on panels driven by numbered segment LEDs (clock-led1..30), if it shows upside down.")
 	displayNose = flag.String("display_nose", "", `LED used as the nose (name under /sys/class/leds or "none"); auto-detected if empty.`)
 
 	lightSensor = flag.String("light_sensor", config.Env("MARUSYA_LIGHT_SENSOR", "auto"), `Ambient light sensor: "auto", an IIO device directory, or empty to disable. Dims the display and puts the face to sleep in the dark.`)
@@ -238,7 +239,7 @@ func run() error {
 		display    *face.Face
 		ring       *ringled.Ring
 	)
-	if strip, desc := ringStrip(); strip != nil {
+	if strip, desc := ringStrip(log); strip != nil {
 		ring = ringled.New(strip, *ringledBrightness, log)
 		defer ring.Close()
 		indicators = append(indicators, ring)
@@ -255,6 +256,9 @@ func run() error {
 		panel, err := seg7.Open(*displayDev, *displayNose)
 		switch {
 		case err == nil:
+			if *displayRot {
+				panel.Rotate180()
+			}
 			display = face.New(panel, log)
 			indicators = append(indicators, display)
 			log.Info("face display enabled", "device", panel.Dir(), "dimmable", panel.Dimmable(), "layout_calibrated", panel.Calibrated())
@@ -379,18 +383,27 @@ func run() error {
 	return a.Run(ctx)
 }
 
-// ringStrip returns the LED ring from the flags; nil disables the ring.
-func ringStrip() (ringled.Strip, string) {
+// ringStrip returns the LED ring from the flags; nil disables the ring. The
+// VK Capsula Mini's ring is a WS2812 chain on spidev; builds on the stock
+// kernel expose it as LED class devices instead.
+func ringStrip(log *slog.Logger) (ringled.Strip, string) {
 	switch *ringMode {
-	case "on":
-	case "auto":
-		if !ringled.Detect() {
-			return nil, ""
-		}
+	case "on", "auto":
 	default:
 		return nil, ""
 	}
-	return ringled.NewSPI(*ringDev), "spi " + *ringDev
+	if ringled.Detect() || (*ringMode == "on" && !ringled.LEDsAvailable()) {
+		return ringled.NewSPI(*ringDev), "spi " + *ringDev
+	}
+	if ringled.LEDsAvailable() {
+		strip, err := ringled.NewLEDs()
+		if err != nil {
+			log.Warn("LED ring unavailable", "err", err)
+			return nil, ""
+		}
+		return strip, "leds /sys/class/leds/top-led1..36"
+	}
+	return nil, ""
 }
 
 // playRingDemo shows every look of the ring once (-ring_demo).

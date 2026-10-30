@@ -20,6 +20,10 @@
 // panel drives the segments directly, which allows dimming: lit segments get
 // the current brightness instead of the driver's fixed maximum.
 //
+// Builds without the line-display driver (the stock 4.9 kernel) name the
+// LEDs clock-led1..clock-led30 instead: seven per digit, segments a..g in
+// order, then the colon dots. The panel then uses only the LEDs.
+//
 // Otherwise arbitrary segment masks are shown by temporarily remapping a few
 // unused control codes in the driver's 128-byte ASCII-to-segments table
 // (map_seg7) and writing those codes to message. The lower colon dot is a
@@ -77,6 +81,29 @@ type Panel struct {
 	mu sync.Mutex
 }
 
+// builtinMap is the ASCII to segments table of panels without a line
+// display: digits, a few letters and punctuation.
+var builtinMap = func() (m [128]byte) {
+	for c, v := range map[byte]byte{
+		'0': A | B | C | D | E | F, '1': B | C, '2': A | B | D | E | G, '3': A | B | C | D | G,
+		'4': B | C | F | G, '5': A | C | D | F | G, '6': A | C | D | E | F | G, '7': A | B | C,
+		'8': A | B | C | D | E | F | G, '9': A | B | C | D | F | G,
+		'A': A | B | C | E | F | G, 'B': C | D | E | F | G, 'C': A | D | E | F, 'D': B | C | D | E | G,
+		'E': A | D | E | F | G, 'F': A | E | F | G, 'H': B | C | E | F | G, 'L': D | E | F,
+		'N': C | E | G, 'O': C | D | E | G, 'P': A | B | E | F | G, 'R': E | G, 'T': D | E | F | G,
+		'U': B | C | D | E | F, 'Y': B | C | D | F | G,
+		'-': G, '_': D, '=': D | G, '\'': F, '"': B | F,
+	} {
+		if c < 128 {
+			m[c] = v
+			if c >= 'A' && c <= 'Z' {
+				m[c+'a'-'A'] = v
+			}
+		}
+	}
+	return m
+}()
+
 // ledsRoot is the LED class directory (a variable for tests).
 var ledsRoot = "/sys/class/leds"
 
@@ -100,12 +127,58 @@ func findSegments() *[4][7]string {
 	return &segs
 }
 
+// numberedPrefix names the segment LEDs of builds without a line display.
+const numberedPrefix = "clock-led"
+
+// findNumbered looks for LEDs named clock-led1..clock-led28: digit-major,
+// segments a..g in order.
+func findNumbered() *[4][7]string {
+	var segs [4][7]string
+	for d := range 4 {
+		for sg := range 7 {
+			path := filepath.Join(ledsRoot, fmt.Sprintf("%s%d", numberedPrefix, d*7+sg+1))
+			if _, err := os.Stat(filepath.Join(path, "brightness")); err != nil {
+				return nil
+			}
+			segs[d][sg] = path
+		}
+	}
+	return &segs
+}
+
+// openLEDs opens a panel driven by the segment LEDs alone.
+func openLEDs(segs *[4][7]string, nose string) *Panel {
+	n := findNose(nose)
+	if n == "" && nose == "" {
+		// The lower colon dot follows the segments.
+		if path := filepath.Join(ledsRoot, numberedPrefix+"30"); fileExists(filepath.Join(path, "brightness")) {
+			n = path
+		}
+	}
+	p := &Panel{nose: n, noseLevel: 255, base: builtinMap, segs: segs, written: map[string]int{}}
+	for _, digit := range segs {
+		for _, path := range digit {
+			writeFile(filepath.Join(path, "trigger"), []byte("none"))
+		}
+	}
+	p.level = scaled(filepath.Join(segs[0][0], "max_brightness"), 100, 255)
+	return p
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // Open finds and opens the panel. Empty dev and nose are auto-detected;
 // nose "none" disables the dot.
 func Open(dev, nose string) (*Panel, error) {
 	if dev == "" {
 		var err error
 		if dev, err = findLinedisp(); err != nil {
+			if segs := findNumbered(); segs != nil {
+				return openLEDs(segs, nose), nil
+			}
 			return nil, err
 		}
 	}
@@ -250,8 +323,28 @@ func (p *Panel) render(m [4]byte) error {
 	return first
 }
 
-// Dir returns the line-display directory.
-func (p *Panel) Dir() string { return p.dir }
+// Dir returns the line-display directory, or the first segment LED of a
+// panel without one.
+func (p *Panel) Dir() string {
+	if p.dir == "" && p.segs != nil {
+		return p.segs[0][0]
+	}
+	return p.dir
+}
+
+// Rotate180 turns the layout of a panel driven by its segment LEDs upside
+// down, for a panel mounted the other way round.
+func (p *Panel) Rotate180() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.segs == nil {
+		return
+	}
+	p.segs = rotate180(p.segs)
+	if p.frameN {
+		p.render(p.frame)
+	}
+}
 
 func findLinedisp() (string, error) {
 	var found string
