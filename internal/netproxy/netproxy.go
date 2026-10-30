@@ -209,8 +209,10 @@ func connect(ctx context.Context, pu *url.URL, addr string) (_ net.Conn, err err
 	if err != nil {
 		return nil, fmt.Errorf("proxy %s: %w", pu.Host, err)
 	}
-	resp.Body.Close()
+	// A 200 response to CONNECT has no body, the tunnel follows: closing
+	// the body would drain the tunnel until EOF on Go < 1.26.
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
 		return nil, fmt.Errorf("proxy %s: CONNECT %s: %s", pu.Host, addr, resp.Status)
 	}
 	if !stop() {

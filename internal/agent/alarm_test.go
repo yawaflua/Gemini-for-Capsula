@@ -64,7 +64,7 @@ func (v *fakeVolume) history() []int {
 }
 
 func TestAgentRingsAlarm(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewTextHandler(newTestWriter(t), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	s := server.New(server.Config{Provider: echo.Provider{}, DefaultTimeZone: "Asia/Jerusalem",
 		AlarmsFile: t.TempDir() + "/alarms.json", Logger: log})
 	loc, _ := time.LoadLocation("Asia/Jerusalem")
