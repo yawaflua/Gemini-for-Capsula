@@ -37,7 +37,11 @@ async function api(method, path, body) {
     showLogin();
     throw new HTTPError(401, "нужно войти");
   }
-  if (!resp.ok) throw new HTTPError(resp.status, (data && data.error) || resp.statusText);
+  if (!resp.ok) {
+    const e = new HTTPError(resp.status, (data && data.error) || resp.statusText);
+    e.output = data && data.output; // what the speaker printed, see install
+    throw e;
+  }
   return data;
 }
 
@@ -156,6 +160,7 @@ async function boot() {
   document.body.classList.toggle("tunable", st.tunable);
   renderServerLine();
   renderInstall();
+  renderSpotify();
   renderDevices();
   renderHistory();
   renderSettings();
@@ -215,6 +220,7 @@ async function refreshInfo() {
     document.body.classList.toggle("tunable", st.tunable);
     renderServerLine();
   renderInstall();
+  renderSpotify();
     renderSettings();
   } catch { /* ignore */ }
 }
@@ -226,6 +232,54 @@ async function refreshSettings() {
     renderSettings();
   } catch { /* ignore */ }
 }
+
+function renderSpotify() {
+  const sp = state.info.spotify;
+  $("#spotify-form").hidden = !sp;
+  if (!sp) return;
+  // Keep what is being typed when the state refreshes.
+  if (!$("#spotify-form").contains(document.activeElement)) {
+    $("#sp-client-id").value = sp.client_id || "";
+    $("#sp-client-secret").value = "";
+    $("#sp-market").value = sp.market || "";
+  }
+  $("#sp-client-secret").placeholder = sp.secret_set ? "задан — оставьте пустым, чтобы не менять" : "";
+  $("#spotify-reset").hidden = !sp.panel;
+  $("#spotify-reset").textContent = sp.env ? "Вернуть из переменных окружения" : "Отключить Spotify";
+  const on = sp.client_id && sp.secret_set;
+  $("#spotify-note").textContent = (on ? "Поиск в Spotify включён" + (sp.panel ? " (ключи из панели)." : " (ключи из MARUSYA_SPOTIFY_CLIENT_ID)." ) : "Spotify выключен: музыка ищется на YouTube.")
+    + (sp.saved ? "" : " Ключи действуют до перезапуска: задайте MARUSYA_SETTINGS_FILE, чтобы они сохранялись.")
+    + (on ? " Новые ключи действуют с нового разговора." : "");
+}
+
+$("#spotify-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#spotify-error");
+  err.hidden = true;
+  const btn = $("button[type=submit]", e.target);
+  btn.disabled = true;
+  try {
+    state.info.spotify = await api("PUT", "spotify", {
+      client_id: $("#sp-client-id").value,
+      client_secret: $("#sp-client-secret").value,
+      market: $("#sp-market").value,
+    });
+    renderSpotify();
+    const ok = $("#spotify-saved");
+    ok.hidden = false;
+    setTimeout(() => (ok.hidden = true), 2500);
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#spotify-reset").addEventListener("click", async (e) => {
+  const r = await run(e.target, () => api("DELETE", "spotify"));
+  if (r) { state.info.spotify = r; renderSpotify(); }
+});
 
 function renderInstall() {
   $("#install-card").hidden = !state.info.install;
@@ -249,20 +303,65 @@ $("#install-form").addEventListener("submit", async (e) => {
     server: $("#inst-server").value,
     user: $("#inst-user").value,
     port: Number($("#inst-port").value) || 22,
+    name: $("#inst-name").value,
+    airplay: $("#inst-airplay").checked,
+    spotify: $("#inst-spotify").checked,
   };
   const btn = $("button[type=submit]", e.target);
   btn.disabled = true;
-  status.textContent = "Устанавливаю… (до минуты: колонка скачивает агента)";
+  status.textContent = body.airplay || body.spotify
+    ? "Устанавливаю… (несколько минут: колонка ставит пакеты)"
+    : "Устанавливаю… (до минуты: колонка скачивает агента)";
+  $("#spotify-login").hidden = true;
   status.hidden = false;
   try {
     const r = await api("POST", "install", body);
     $("#inst-password").value = "";
     status.textContent = `Готово, колонка скоро появится в списке. Ключ SSH колонки: ${r.host_key}`;
     if (r.output) { log.textContent = r.output; log.hidden = false; }
+    if (r.spotify_login) {
+      state.spotifyLogin = r.spotify_login.id;
+      $("#sp-link").href = r.spotify_login.url;
+      $("#sp-redirect").value = "";
+      $("#sp-error").hidden = $("#sp-status").hidden = true;
+      $("#spotify-login button[type=submit]").hidden = false;
+      $("#spotify-login").hidden = false;
+      $("#spotify-login").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   } catch (ex) {
     status.hidden = true;
     err.textContent = ex.message;
     err.hidden = false;
+    if (ex.output) { log.textContent = ex.output; log.hidden = false; }
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+const syncInstallName = () => {
+  $("#inst-name-field").hidden = !$("#inst-airplay").checked && !$("#inst-spotify").checked;
+};
+$("#inst-airplay").addEventListener("change", syncInstallName);
+$("#inst-spotify").addEventListener("change", syncInstallName);
+
+$("#spotify-login").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#sp-error"), status = $("#sp-status"), log = $("#install-log");
+  err.hidden = true;
+  const btn = $("button[type=submit]", e.target);
+  btn.disabled = true;
+  status.textContent = "Передаю вход колонке…";
+  status.hidden = false;
+  try {
+    const r = await api("POST", "install/spotify", { id: state.spotifyLogin, redirect: $("#sp-redirect").value });
+    status.textContent = "Готово: колонка вошла в Spotify.";
+    if (r.output) { log.textContent += "\n\n== Вход в Spotify ==\n" + r.output; log.hidden = false; }
+    btn.hidden = true;
+  } catch (ex) {
+    status.hidden = true;
+    err.textContent = ex.message;
+    err.hidden = false;
+    if (ex.output) { log.textContent += "\n\n== Вход в Spotify ==\n" + ex.output; log.hidden = false; }
   } finally {
     btn.disabled = false;
   }

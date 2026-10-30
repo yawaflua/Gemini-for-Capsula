@@ -68,6 +68,9 @@ type Config struct {
 	AnswerTimeout time.Duration
 	// DuckMedia pauses the media player while the assistant is active.
 	DuckMedia bool
+	// OnConnected, if set, runs in its own goroutine after every
+	// (re)connection to the server, with a context ending on disconnect.
+	OnConnected func(ctx context.Context)
 }
 
 func (c *Config) setDefaults() {
@@ -287,6 +290,9 @@ func (a *Agent) serve(ctx context.Context) error {
 	}
 	a.log.Info("connected to server", "session", ready.SessionID, "output_rate", ready.OutputFormat.SampleRateHertz, "server_vad", ready.ServerVAD)
 	a.indicator.Show(indicator.Idle)
+	if a.cfg.OnConnected != nil {
+		go a.cfg.OnConnected(ctx)
+	}
 
 	go conn.KeepAlive(ctx, 20*time.Second)
 	s := newSession(a, conn, ready)

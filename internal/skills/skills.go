@@ -50,22 +50,37 @@ type Skill interface {
 	Run(ctx context.Context, dev Device, args map[string]any) (map[string]any, error)
 }
 
+// Optional is a skill that can be switched off at run time, e.g. one
+// whose credentials are set in the web panel.
+type Optional interface {
+	Skill
+	// Available reports whether the skill is offered to the model now.
+	Available() bool
+}
+
+func available(sk Skill) bool {
+	o, ok := sk.(Optional)
+	return !ok || o.Available()
+}
+
 // Set is a collection of skills.
 type Set []Skill
 
-// Tools returns the declarations of every skill.
+// Tools returns the declarations of every available skill.
 func (s Set) Tools() []tools.Tool {
 	out := make([]tools.Tool, 0, len(s))
 	for _, sk := range s {
-		out = append(out, sk.Tool())
+		if available(sk) {
+			out = append(out, sk.Tool())
+		}
 	}
 	return out
 }
 
-// Lookup finds a skill by function name.
+// Lookup finds an available skill by function name.
 func (s Set) Lookup(name string) (Skill, bool) {
 	for _, sk := range s {
-		if sk.Tool().Name() == name {
+		if sk.Tool().Name() == name && available(sk) {
 			return sk, true
 		}
 	}

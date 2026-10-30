@@ -82,6 +82,18 @@
               <input id="inst-server" required spellcheck="false">
             </label>
           </div>
+          <div class="opt-row">
+            <label class="switch"><input type="checkbox" role="switch" id="inst-airplay"><span class="switch-track"><span class="switch-handle"></span></span></label>
+            <div><strong>AirPlay 2</strong><small class="hint">Музыка с iPhone, iPad и Mac. Сборка <a href="https://github.com/ryysel/capsula-mini-airplay2" target="_blank" rel="noopener">capsula-mini-airplay2</a>, нужны Alpine 3.24 и интернет на колонке.</small></div>
+          </div>
+          <div class="opt-row">
+            <label class="switch"><input type="checkbox" role="switch" id="inst-spotify"><span class="switch-track"><span class="switch-handle"></span></span></label>
+            <div><strong>Spotify</strong><small class="hint">spotifyd и вход в ваш аккаунт Spotify (нужен Premium). Ссылка для входа появится после установки.</small></div>
+          </div>
+          <label class="field" id="inst-name-field" hidden>
+            <span>Имя колонки <em>— так её видно в AirPlay и Spotify</em></span>
+            <input id="inst-name" placeholder="Маруся" maxlength="50">
+          </label>
           <details class="more">
             <summary class="muted">Пользователь и порт SSH</summary>
             <div class="grid2">
@@ -95,6 +107,22 @@
             <span class="muted" id="install-status" hidden></span>
           </div>
           <pre class="install-log" id="install-log" hidden></pre>
+        </form>
+        <form id="spotify-login" class="spotify-login" hidden autocomplete="off">
+          <h3>Вход в Spotify</h3>
+          <ol>
+            <li>Откройте <a id="sp-link" target="_blank" rel="noopener">страницу входа Spotify</a> и войдите.</li>
+            <li>Браузер перейдёт на <code>127.0.0.1:8000</code> и покажет ошибку — так и должно быть. Скопируйте адрес этой страницы из адресной строки и вставьте сюда:</li>
+          </ol>
+          <label class="field">
+            <input id="sp-redirect" placeholder="http://127.0.0.1:8000/login?code=…" required spellcheck="false">
+          </label>
+          <p id="sp-error" class="error" hidden></p>
+          <div class="actions">
+            <button class="btn primary" type="submit">Войти</button>
+            <span class="muted" id="sp-status" hidden></span>
+          </div>
+          <p class="hint">Ссылка действует 10 минут. Можно и без неё: выберите колонку в приложении Spotify в той же Wi-Fi — вход тоже сохранится.</p>
         </form>
       </details>
     </section>
@@ -173,6 +201,31 @@
           <span class="saved muted" id="settings-saved" hidden>Сохранено ✓</span>
         </div>
         <p class="hint">Новые настройки применяются к колонкам, которые сейчас молчат, сразу. Если колонка в этот момент разговаривает, они вступят в силу со следующим вопросом. Контекст текущего разговора при этом забывается.</p>
+      </form>
+      <form id="spotify-form" class="card settings" hidden autocomplete="off">
+        <h2>Spotify</h2>
+        <p class="muted">Приложение Spotify, через которое сервер ищет музыку для «включи …». Создайте его на <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a> (Web API) и вставьте ключи. Играет колонка со своего аккаунта: войти в него можно при добавлении колонки.</p>
+        <p class="muted" id="spotify-note"></p>
+        <div class="grid2">
+          <label class="field">
+            <span>Client ID</span>
+            <input id="sp-client-id" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Client Secret</span>
+            <input id="sp-client-secret" type="password" spellcheck="false" autocomplete="new-password">
+          </label>
+          <label class="field">
+            <span>Страна <em>— только музыка, доступная там; пусто = любая</em></span>
+            <input id="sp-market" placeholder="RU" maxlength="2" spellcheck="false">
+          </label>
+        </div>
+        <p id="spotify-error" class="error" hidden></p>
+        <div class="actions">
+          <button class="btn primary" type="submit">Сохранить</button>
+          <button class="btn outlined" type="button" id="spotify-reset" hidden>Вернуть из переменных окружения</button>
+          <span class="saved muted" id="spotify-saved" hidden>Сохранено ✓</span>
+        </div>
       </form>
     </section>
     <!-- Plugins -->

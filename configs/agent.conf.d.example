@@ -37,6 +37,10 @@ MARUSYA_PLUGINS_DIR=
 
 MARUSYA_AGENT_DIR=/tmp/marusya
 MARUSYA_AGENT_ARCH=arm64
+# On every connection compare the agent with the server's and, if it
+# differs, download the new one and restart when idle. false keeps the
+# binary that was downloaded at boot (e.g. for testing a build by hand).
+MARUSYA_AUTO_UPDATE=true
 
 # Extra command-line flags, e.g. "-log_level debug -follow_up=false".
 MARUSYA_AGENT_ARGS=""
