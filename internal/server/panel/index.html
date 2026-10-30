@@ -64,6 +64,39 @@
         <aside class="device-list" id="device-list"></aside>
         <div class="device-detail" id="device-detail"></div>
       </div>
+      <details class="card install" id="install-card" hidden>
+        <summary><h2>Добавить колонку</h2></summary>
+        <form id="install-form" autocomplete="off">
+          <p class="muted">Сервер зайдёт на колонку по SSH и поставит сервис, который при каждой загрузке скачивает агента с этого сервера. Пароль используется один раз и нигде не сохраняется.</p>
+          <div class="grid2">
+            <label class="field">
+              <span>Адрес колонки</span>
+              <input id="inst-host" placeholder="192.168.1.50" required spellcheck="false">
+            </label>
+            <label class="field">
+              <span>Пароль root <em>— SSH колонки</em></span>
+              <input id="inst-password" type="password" autocomplete="new-password">
+            </label>
+            <label class="field span2">
+              <span>Адрес сервера для колонки <em>— как колонка видит этот сервер</em></span>
+              <input id="inst-server" required spellcheck="false">
+            </label>
+          </div>
+          <details class="more">
+            <summary class="muted">Пользователь и порт SSH</summary>
+            <div class="grid2">
+              <label class="field"><span>Пользователь</span><input id="inst-user" value="root" spellcheck="false"></label>
+              <label class="field"><span>Порт</span><input id="inst-port" type="number" min="1" max="65535" value="22"></label>
+            </div>
+          </details>
+          <p id="install-error" class="error" hidden></p>
+          <div class="actions">
+            <button class="btn primary" type="submit">Установить</button>
+            <span class="muted" id="install-status" hidden></span>
+          </div>
+          <pre class="install-log" id="install-log" hidden></pre>
+        </form>
+      </details>
     </section>
 
     <!-- History -->
