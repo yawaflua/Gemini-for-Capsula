@@ -57,6 +57,8 @@ docker compose ps        # marusya-server должен стать healthy
 «Колонки» → «Добавить колонку» укажите IP колонки, пароль root и адрес сервера
 `ws://<ip-сервера>:8080/v1/stream`, нажмите «Установить». Сервер сам поставит на колонку
 сервис, и через несколько секунд она появится в списке. Всё, можно разговаривать.
+Там же можно сразу поставить AirPlay 2 и Spotify (галочки в форме): для Spotify панель
+покажет ссылку для входа в аккаунт.
 
 Ключевое слово задаётся в панели («Настройки»). Обновление на новую версию:
 
@@ -656,7 +658,9 @@ marusya-ask -server http://192.168.31.80:8080 -token "$MARUSYA_AUTH_TOKEN" -list
 Колонка принимает AirPlay 2 с iPhone, iPad и Mac через shairport-sync. Готовая сборка
 для Капсулы Мини (shairport-sync, nqptp, avahi, сервисы OpenRC):
 [ryysel/capsula-mini-airplay2](https://github.com/ryysel/capsula-mini-airplay2).
-Установите её по инструкции оттуда (`install.sh --name "Маруся"`).
+Проще всего поставить её из веб-панели: в форме «Добавить колонку» включите «AirPlay 2».
+Сервер скачает сборку (закреплённую версию), передаст её на колонку и запустит
+`install.sh --upgrade --name <имя колонки>`. Вручную — по инструкции из того репозитория.
 
 Агент сам находит shairport-sync на системной D-Bus (`org.gnome.ShairportSync`), отдельно
 ничего настраивать не нужно. Пока телефон играет на колонку:
@@ -691,40 +695,22 @@ MARUSYA_SPOTIFY_CLIENT_ID=…
 MARUSYA_SPOTIFY_CLIENT_SECRET=…
 ```
 
-**На колонке** нужен spotifyd 0.4+ с MPRIS (`apk add spotifyd playerctl dbus`). Графической
-сессии там нет, поэтому spotifyd работает на системной шине D-Bus. `/etc/spotifyd.conf`:
+**На колонке** нужен spotifyd 0.4+ с MPRIS. Из веб-панели: в форме «Добавить колонку»
+включите «Spotify». Сервер поставит `spotifyd playerctl dbus` из apk, конфиг
+[deploy/agent/spotifyd.conf](deploy/agent/spotifyd.conf) (если своего ещё нет), правила
+D-Bus [deploy/agent/spotifyd-dbus.conf](deploy/agent/spotifyd-dbus.conf) и сервис
+[deploy/agent/spotifyd.openrc](deploy/agent/spotifyd.openrc). Затем панель покажет ссылку
+для входа в Spotify: войдите, браузер перейдёт на `http://127.0.0.1:8000/login?code=…` и
+покажет ошибку — скопируйте этот адрес в панель, и сервер передаст его spotifyd на колонке
+(`spotifyd authenticate`). Вход сохраняется в `/var/cache/spotifyd`, после перезагрузки
+spotifyd логинится сам. Без ссылки тоже можно: выберите колонку в приложении Spotify в той
+же сети Wi-Fi.
 
-```toml
-[global]
-device_name = "Marusya"
-backend = "alsa"
-device = "default"          # через asound.conf, вместе с эквалайзером
-use_mpris = true
-dbus_type = "system"
-cache_path = "/var/cache/spotifyd"   # здесь сохраняется вход
-```
-
-Разрешение для spotifyd на системной шине, `/etc/dbus-1/system.d/spotifyd.conf`:
-
-```xml
-<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <policy user="root">
-    <allow own_prefix="org.mpris.MediaPlayer2.spotifyd"/>
-    <allow own_prefix="rs.spotifyd"/>
-  </policy>
-  <policy context="default">
-    <allow send_destination_prefix="org.mpris.MediaPlayer2.spotifyd"/>
-    <allow send_destination_prefix="rs.spotifyd"/>
-  </policy>
-</busconfig>
-```
-
-Войти один раз: `spotifyd authenticate` или выбрать «Marusya» в приложении Spotify в той
-же сети Wi-Fi. Вход сохраняется в `cache_path`, после перезагрузки spotifyd логинится сам.
-Сервис: скопируйте `deploy/agent/spotifyd.openrc` в `/etc/init.d/spotifyd`, затем
-`rc-update add dbus default && rc-update add spotifyd default`.
+Вручную: `apk add spotifyd playerctl dbus`, скопируйте эти три файла в `/etc/spotifyd.conf`,
+`/etc/dbus-1/system.d/spotifyd.conf` и `/etc/init.d/spotifyd`, выполните
+`rc-update add dbus default && rc-update add spotifyd default` и войдите через
+`spotifyd authenticate`. Графической сессии на колонке нет, поэтому spotifyd работает на
+системной шине D-Bus.
 
 spotifyd 0.4 показывает плеер MPRIS, только пока он активное устройство Spotify Connect.
 Поэтому агент перед открытием ссылки `spotify:` сам делает его активным

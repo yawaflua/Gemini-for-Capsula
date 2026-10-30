@@ -15,11 +15,16 @@
 package server
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,12 +37,34 @@ import (
 	agentdeploy "github.com/yawaflua/marusya-gemini/deploy/agent"
 )
 
+// speakerStubs stand in for the speaker's commands. They log their
+// arguments to $INSTALL_ROOT/<name>.log. The spotifyd stub prints a sign-in
+// link and waits until wget has "opened" the redirect.
+var speakerStubs = map[string]string{
+	"rc-service": `echo "$@" >> "$INSTALL_ROOT/rc.log"`,
+	"rc-update":  `echo "$@" >> "$INSTALL_ROOT/rc.log"`,
+	"apk":        `echo "$@" >> "$INSTALL_ROOT/apk.log"`,
+	"dbus-send":  `true`,
+	"wget":       `echo "$@" >> "$INSTALL_ROOT/wget.log"`,
+	"spotifyd": `case "$1" in
+--version) echo spotifyd 0.4.2 ;;
+authenticate)
+	echo "$@" > "$INSTALL_ROOT/auth.args"
+	echo "Browse to: https://accounts.spotify.com/authorize?client_id=x"
+	i=0
+	while [ ! -f "$INSTALL_ROOT/wget.log" ]; do sleep 0.1; i=$((i+1)); [ $i -lt 100 ] || exit 1; done
+	echo "Login successful!" ;;
+esac`,
+}
+
 // fakeSpeaker is an SSH server that runs exec requests with the local sh,
-// with /etc under root and stub rc-service/rc-update on PATH.
+// with /etc under root and [speakerStubs] on PATH.
 func fakeSpeaker(t *testing.T, password string) (addr, root string) {
 	t.Helper()
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh")
+	for _, c := range []string{"sh", "tar", "awk"} {
+		if _, err := exec.LookPath(c); err != nil {
+			t.Skip("no " + c)
+		}
 	}
 	root = t.TempDir()
 	bin := filepath.Join(root, "bin")
@@ -46,9 +73,8 @@ func fakeSpeaker(t *testing.T, password string) (addr, root string) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"rc-service", "rc-update"} {
-		stub := "#!/bin/sh\necho " + name + " \"$@\" >> " + filepath.Join(root, "rc.log") + "\n"
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(stub), 0o755); err != nil {
+	for name, body := range speakerStubs {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -121,27 +147,52 @@ func serveFakeSSH(nc net.Conn, cfg *ssh.ServerConfig, root, bin string) {
 	}
 }
 
-func TestInstallAgent(t *testing.T) {
-	addr, root := fakeSpeaker(t, "pw")
+func fakeInstaller(t *testing.T, token string) *installer {
+	t.Helper()
+	// The AirPlay bundle: its install.sh records its arguments.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	script := []byte("#!/bin/sh\necho \"$@\" > \"$INSTALL_ROOT/airplay.args\"\necho INSTALL_PASS\n")
+	tw.WriteHeader(&tar.Header{Name: "capsula-mini-airplay2-526959e/", Typeflag: tar.TypeDir, Mode: 0o755})
+	tw.WriteHeader(&tar.Header{Name: "capsula-mini-airplay2-526959e/install.sh", Mode: 0o755, Size: int64(len(script))})
+	tw.Write(script)
+	tw.Close()
+	gz.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write(buf.Bytes()) }))
+	t.Cleanup(srv.Close)
+	return &installer{http: srv.Client(), airplayURL: srv.URL, token: token}
+}
+
+func speakerRequest(t *testing.T, addr, password string) installRequest {
+	t.Helper()
 	host, port, _ := net.SplitHostPort(addr)
-	req := installRequest{Host: host, Password: "pw", Server: "ws://10.0.0.5:8080/v1/stream"}
+	req := installRequest{Host: host, Password: password, Server: "ws://10.0.0.5:8080/v1/stream"}
 	req.Port, _ = strconv.Atoi(port)
 	if err := req.validate(); err != nil {
 		t.Fatal(err)
 	}
-	if req.User != "root" {
-		t.Fatalf("user %q, want root by default", req.User)
+	return req
+}
+
+func TestInstallAgent(t *testing.T) {
+	addr, root := fakeSpeaker(t, "pw")
+	req := speakerRequest(t, addr, "pw")
+	if req.User != "root" || req.Name != "Маруся" {
+		t.Fatalf("defaults: user %q, name %q", req.User, req.Name)
 	}
 
-	res, err := installAgent(context.Background(), req, "tok'en")
+	res, login, err := fakeInstaller(t, "tok'en").run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("install: %v\n%s", err, res.Output)
+	}
+	if login != nil {
+		t.Error("a Spotify sign-in without Spotify")
 	}
 	if !strings.HasPrefix(res.HostKey, "SHA256:") {
 		t.Errorf("host key %q", res.HostKey)
 	}
-	init, _ := os.ReadFile(filepath.Join(root, "etc/init.d/marusya-agent"))
-	if string(init) != agentdeploy.OpenRC {
+	if init := readFile(t, filepath.Join(root, "etc/init.d/marusya-agent")); init != agentdeploy.OpenRC {
 		t.Error("init script differs from deploy/agent/marusya-agent.openrc")
 	}
 	conf := readFile(t, filepath.Join(root, "etc/conf.d/marusya-agent"))
@@ -162,7 +213,7 @@ func TestInstallAgent(t *testing.T) {
 	if err != nil || string(out) != "tok'en" {
 		t.Errorf("sourced token %q, %v", out, err)
 	}
-	if log := readFile(t, filepath.Join(root, "rc.log")); !strings.Contains(log, "rc-update add marusya-agent default") || !strings.Contains(log, "rc-service marusya-agent restart") {
+	if log := readFile(t, filepath.Join(root, "rc.log")); !strings.Contains(log, "add marusya-agent default") || !strings.Contains(log, "marusya-agent restart") {
 		t.Errorf("rc log:\n%s", log)
 	}
 
@@ -171,7 +222,7 @@ func TestInstallAgent(t *testing.T) {
 	edited := strings.Replace(conf, "MARUSYA_DBUS=true", "MARUSYA_DBUS=false", 1)
 	os.WriteFile(filepath.Join(root, "etc/conf.d/marusya-agent"), []byte(edited), 0o644)
 	req.Server = "wss://marusya.example.com/v1/stream"
-	if res, err := installAgent(context.Background(), req, "new"); err != nil {
+	if res, _, err := fakeInstaller(t, "new").run(context.Background(), req); err != nil {
 		t.Fatalf("reinstall: %v\n%s", err, res.Output)
 	}
 	conf = readFile(t, filepath.Join(root, "etc/conf.d/marusya-agent"))
@@ -182,8 +233,75 @@ func TestInstallAgent(t *testing.T) {
 	}
 
 	req.Password = "wrong"
-	if _, err := installAgent(context.Background(), req, "new"); err == nil || !strings.Contains(err.Error(), "пароль") {
+	if _, _, err := fakeInstaller(t, "new").run(context.Background(), req); err == nil || !strings.Contains(err.Error(), "пароль") {
 		t.Errorf("wrong password: %v", err)
+	}
+}
+
+func TestInstallAirPlayAndSpotify(t *testing.T) {
+	addr, root := fakeSpeaker(t, "pw")
+	req := speakerRequest(t, addr, "pw")
+	req.Name = "Кухня Маши"
+	req.AirPlay, req.Spotify = true, true
+
+	res, login, err := fakeInstaller(t, "tok").run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("install: %v\n%s", err, res.Output)
+	}
+	if args := readFile(t, filepath.Join(root, "airplay.args")); args != "--upgrade --name Кухня Маши\n" {
+		t.Errorf("AirPlay installer args %q", args)
+	}
+	if !strings.Contains(res.Output, "INSTALL_PASS") {
+		t.Errorf("output lacks the AirPlay installer's:\n%s", res.Output)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "apk.log")); err == nil {
+		t.Error("apk ran although spotifyd is there")
+	}
+	if got := readFile(t, filepath.Join(root, "etc/init.d/spotifyd")); got != agentdeploy.SpotifydOpenRC {
+		t.Error("spotifyd init script differs")
+	}
+	if got := readFile(t, filepath.Join(root, "etc/spotifyd.conf")); !strings.Contains(got, `device_name = "Кухня Маши"`) || !strings.Contains(got, `dbus_type = "system"`) {
+		t.Errorf("spotifyd.conf:\n%s", got)
+	}
+	if got := readFile(t, filepath.Join(root, "etc/dbus-1/system.d/spotifyd.conf")); got != agentdeploy.SpotifydDBus {
+		t.Error("D-Bus policy differs")
+	}
+
+	if login == nil {
+		t.Fatal("no Spotify sign-in")
+	}
+	defer login.close()
+	if !strings.HasPrefix(login.url, "https://accounts.spotify.com/authorize") {
+		t.Errorf("sign-in link %q", login.url)
+	}
+	if _, err := login.finish(context.Background(), "http://localhost:9999/elsewhere?code=x"); err == nil {
+		t.Error("a redirect to another path was accepted")
+	}
+	out, err := login.finish(context.Background(), "http://127.0.0.1:8000/login?code=AQ%20B&state=s1&evil=';reboot'")
+	if err != nil {
+		t.Fatalf("finish: %v\n%s", err, out)
+	}
+	if got := readFile(t, filepath.Join(root, "wget.log")); got != "-q -O /dev/null -T 15 http://127.0.0.1:8000/login?code=AQ+B&state=s1\n" {
+		t.Errorf("wget %q", got)
+	}
+	if !strings.Contains(out, "Login successful") {
+		t.Errorf("output:\n%s", out)
+	}
+	if log := readFile(t, filepath.Join(root, "rc.log")); strings.Count(log, "spotifyd restart") != 2 {
+		t.Errorf("spotifyd restarted %d times, want after install and after sign-in:\n%s", strings.Count(log, "spotifyd restart"), log)
+	}
+}
+
+func TestSpotifyLoginsExpire(t *testing.T) {
+	var ls spotifyLogins
+	l := &spotifyLogin{}
+	id := ls.add(l)
+	if ls.take("nope") != nil {
+		t.Error("took an unknown sign-in")
+	}
+	if ls.take(id) != l || ls.take(id) != nil {
+		t.Error("a sign-in is taken once")
 	}
 }
 
@@ -194,6 +312,8 @@ func TestInstallRequestValidate(t *testing.T) {
 		{Host: "1.2.3.4", Server: "http://a:8080/v1/stream"},
 		{Host: "1.2.3.4", Server: "ws://a:8080/v1/stream x"},
 		{Host: "1.2.3.4", Port: 70000, Server: "ws://a:8080/v1/stream"},
+		{Host: "1.2.3.4", Server: "ws://a:8080/v1/stream", Name: `Ку"хня`},
+		{Host: "1.2.3.4", Server: "ws://a:8080/v1/stream", Name: strings.Repeat("я", 26)},
 	} {
 		if err := req.validate(); err == nil {
 			t.Errorf("%+v: no error", req)

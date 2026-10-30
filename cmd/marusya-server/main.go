@@ -256,6 +256,9 @@ func run() error {
 		Version:           version,
 		Logger:            log,
 	}
+	if px != nil {
+		cfg.HTTPClient = px.Client(5 * time.Minute)
+	}
 	if sp != nil {
 		cfg.Synthesizer, cfg.Recognizer = sp, sp
 		switch *askTTS {

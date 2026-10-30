@@ -77,6 +77,9 @@ type Config struct {
 	// GET /v1/agent/{arch}, so speakers with a full read-only flash can
 	// download the agent into RAM on every boot.
 	AgentDir string
+	// HTTPClient makes the server's own downloads (the AirPlay bundle for
+	// speakers set up from the panel). Nil uses http.DefaultClient.
+	HTTPClient *http.Client
 	// DefaultLocation and DefaultTimeZone describe where a speaker is when
 	// it does not say so itself (see models.Hello).
 	DefaultLocation string
@@ -168,6 +171,8 @@ type Server struct {
 	plugins     *plugin.Manager // nil without PluginsDir
 	plmu        sync.Mutex
 	pluginTools string // names of the plugin tools, see pluginsChanged
+
+	logins spotifyLogins // Spotify sign-ins started from the panel
 }
 
 // New creates a server.

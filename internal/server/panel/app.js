@@ -37,7 +37,11 @@ async function api(method, path, body) {
     showLogin();
     throw new HTTPError(401, "нужно войти");
   }
-  if (!resp.ok) throw new HTTPError(resp.status, (data && data.error) || resp.statusText);
+  if (!resp.ok) {
+    const e = new HTTPError(resp.status, (data && data.error) || resp.statusText);
+    e.output = data && data.output; // what the speaker printed, see install
+    throw e;
+  }
   return data;
 }
 
@@ -249,20 +253,65 @@ $("#install-form").addEventListener("submit", async (e) => {
     server: $("#inst-server").value,
     user: $("#inst-user").value,
     port: Number($("#inst-port").value) || 22,
+    name: $("#inst-name").value,
+    airplay: $("#inst-airplay").checked,
+    spotify: $("#inst-spotify").checked,
   };
   const btn = $("button[type=submit]", e.target);
   btn.disabled = true;
-  status.textContent = "Устанавливаю… (до минуты: колонка скачивает агента)";
+  status.textContent = body.airplay || body.spotify
+    ? "Устанавливаю… (несколько минут: колонка ставит пакеты)"
+    : "Устанавливаю… (до минуты: колонка скачивает агента)";
+  $("#spotify-login").hidden = true;
   status.hidden = false;
   try {
     const r = await api("POST", "install", body);
     $("#inst-password").value = "";
     status.textContent = `Готово, колонка скоро появится в списке. Ключ SSH колонки: ${r.host_key}`;
     if (r.output) { log.textContent = r.output; log.hidden = false; }
+    if (r.spotify_login) {
+      state.spotifyLogin = r.spotify_login.id;
+      $("#sp-link").href = r.spotify_login.url;
+      $("#sp-redirect").value = "";
+      $("#sp-error").hidden = $("#sp-status").hidden = true;
+      $("#spotify-login button[type=submit]").hidden = false;
+      $("#spotify-login").hidden = false;
+      $("#spotify-login").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   } catch (ex) {
     status.hidden = true;
     err.textContent = ex.message;
     err.hidden = false;
+    if (ex.output) { log.textContent = ex.output; log.hidden = false; }
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+const syncInstallName = () => {
+  $("#inst-name-field").hidden = !$("#inst-airplay").checked && !$("#inst-spotify").checked;
+};
+$("#inst-airplay").addEventListener("change", syncInstallName);
+$("#inst-spotify").addEventListener("change", syncInstallName);
+
+$("#spotify-login").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#sp-error"), status = $("#sp-status"), log = $("#install-log");
+  err.hidden = true;
+  const btn = $("button[type=submit]", e.target);
+  btn.disabled = true;
+  status.textContent = "Передаю вход колонке…";
+  status.hidden = false;
+  try {
+    const r = await api("POST", "install/spotify", { id: state.spotifyLogin, redirect: $("#sp-redirect").value });
+    status.textContent = "Готово: колонка вошла в Spotify.";
+    if (r.output) { log.textContent += "\n\n== Вход в Spotify ==\n" + r.output; log.hidden = false; }
+    btn.hidden = true;
+  } catch (ex) {
+    status.hidden = true;
+    err.textContent = ex.message;
+    err.hidden = false;
+    if (ex.output) { log.textContent += "\n\n== Вход в Spotify ==\n" + ex.output; log.hidden = false; }
   } finally {
     btn.disabled = false;
   }

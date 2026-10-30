@@ -148,6 +148,7 @@ func (s *Server) routePanel() {
 	s.registerPluginAPI()
 	if s.cfg.AgentDir != "" {
 		s.mux.HandleFunc("POST /panel/api/install", s.panelAPI(s.handleInstall))
+		s.mux.HandleFunc("POST /panel/api/install/spotify", s.panelAPI(s.handleSpotifyLogin))
 	}
 }
 
