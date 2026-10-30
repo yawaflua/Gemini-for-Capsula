@@ -4,6 +4,12 @@
 #   cp configs/server.env.example configs/server.env   # keys, token, location
 #   docker compose -f deploy/server/docker-compose.yaml up -d --build
 #
+# Or without building, with the images CI pushes to GitHub Container Registry
+# (linux/amd64 and linux/arm64):
+#
+#   docker compose -f deploy/server/docker-compose.yaml pull
+#   docker compose -f deploy/server/docker-compose.yaml up -d
+#
 # Speakers then use MARUSYA_SERVER=ws://<host>:8080/v1/stream. With
 # MARUSYA_PANEL_PASSWORD set, the web panel is at http://<host>:8080/panel/.
 
@@ -14,7 +20,7 @@ services:
       dockerfile: deploy/server/Dockerfile
       args:
         VERSION: ${VERSION:-dev}
-    image: marusya-server:latest
+    image: ghcr.io/yawaflua/marusya-server:latest
     container_name: marusya-server
     restart: unless-stopped
     ports:
@@ -54,7 +60,7 @@ services:
     profiles: ["wake"]
     build:
       context: ../wake
-    image: marusya-wake:latest
+    image: ghcr.io/yawaflua/marusya-wake:latest
     container_name: marusya-wake
     restart: unless-stopped
     environment:
