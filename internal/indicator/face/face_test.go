@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/yawaflua/marusya-gemini/internal/indicator"
+	"github.com/yawaflua/marusya-gemini/internal/models"
 )
 
 type fakePanel struct {
@@ -137,5 +138,83 @@ func TestAmbient(t *testing.T) {
 	defer p.mu.Unlock()
 	if want := []int{10, 79}; !slices.Equal(p.pct, want) {
 		t.Errorf("brightness = %v, want %v", p.pct, want)
+	}
+}
+
+func TestOverride(t *testing.T) {
+	p := &dimPanel{}
+	f := newFace(p, nil, time.Second)
+	defer f.Close()
+	wait := func() { time.Sleep(40 * time.Millisecond) }
+	f.SetAmbient(200)
+	wait()
+
+	if _, err := f.Override(models.DisplayRequest{Mode: "text", Text: "Привет"}); err == nil {
+		t.Error("Cyrillic text must be rejected")
+	}
+	if _, err := f.Override(models.DisplayRequest{Text: "hello"}); err == nil {
+		t.Error("text longer than 4 characters must be rejected")
+	}
+	if _, err := f.Override(models.DisplayRequest{Text: "HI", Brightness: 30, Hold: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	wait()
+	if got := p.last(); got != "text:HI" {
+		t.Errorf("text override: %s, want text:HI", got)
+	}
+	f.Show(indicator.Listening)
+	wait()
+	if got, want := p.last(), "3f00003f/true"; got != want {
+		t.Errorf("listening over the override: %s, want %s", got, want)
+	}
+	f.Show(indicator.Idle)
+	wait()
+	if got := p.last(); got != "text:HI" {
+		t.Errorf("back to the override: %s, want text:HI", got)
+	}
+	time.Sleep(time.Second)
+	if got, want := p.last(), "63000063/true"; got != want {
+		t.Errorf("after expiry: %s, want the idle face %s\n%s", got, want, strings.Join(p.all(), " "))
+	}
+	p.mu.Lock()
+	if want := []int{79, 30, 79}; !slices.Equal(p.pct, want) {
+		t.Errorf("brightness = %v, want %v (sensor, override, sensor again)", p.pct, want)
+	}
+	p.mu.Unlock()
+
+	f.Override(models.DisplayRequest{Mode: "sleep"})
+	wait()
+	if got, want := p.last(), "40000040/true"; got != want || !f.Asleep() {
+		t.Errorf("forced sleep: %s asleep=%v, want %s", got, f.Asleep(), want)
+	}
+	f.SetAmbient(0)
+	f.Override(models.DisplayRequest{Mode: "wake"})
+	wait()
+	if got, want := p.last(), "63000063/true"; got != want || f.Asleep() {
+		t.Errorf("forced awake in the dark: %s asleep=%v, want %s", got, f.Asleep(), want)
+	}
+	f.ResetOverride()
+	wait()
+	if got, want := p.last(), "40000040/true"; got != want {
+		t.Errorf("reset in the dark: %s, want sleeping %s", got, want)
+	}
+
+	f.Override(models.DisplayRequest{Mode: "clock"})
+	wait()
+	if got, want := p.last(), "text:"+time.Now().Format("1504"); got != want {
+		t.Errorf("clock: %s, want %s", got, want)
+	}
+	f.Override(models.DisplayRequest{Mode: "off"})
+	wait()
+	if got, want := p.last(), "00000000/false"; got != want {
+		t.Errorf("off: %s, want %s", got, want)
+	}
+}
+
+func TestOverrideNotDimmable(t *testing.T) {
+	f := newFace(&fakePanel{}, nil, time.Second)
+	defer f.Close()
+	if _, err := f.Override(models.DisplayRequest{Mode: "face", Brightness: 50}); err != ErrNotDimmable {
+		t.Errorf("err = %v, want ErrNotDimmable", err)
 	}
 }

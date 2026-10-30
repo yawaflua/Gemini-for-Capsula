@@ -426,3 +426,10 @@ body:not(.tunable) .tunable { display: none; }
 .prov-main b { display: block; overflow-wrap: anywhere; }
 .prov-main small { display: block; opacity: .75; overflow-wrap: anywhere; }
 .prov .row { margin-top: 0; }
+
+/* Ring and display */
+.surface h4 { font-size: 14px; line-height: 20px; font-weight: 500; letter-spacing: 0.1px; margin: 0; }
+.surface-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px 24px; }
+.surface-range { margin-top: 12px; }
+.surface select { width: auto; }
+.surface .facts { border-top: 1px solid var(--md-outline-variant); padding-top: 16px; }

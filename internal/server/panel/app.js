@@ -90,6 +90,8 @@ const actionNames = {
   "bluetooth.disconnect": "Bluetooth: отключить", "bluetooth.devices": "Bluetooth: список",
   "light.night": "ночник", "conversation.end": "завершить разговор", "time_now": "время", "alarm_set": "будильник", "alarm_list": "будильники", "alarm_delete": "удалить будильник", "weather_forecast": "погода",
   "home_find": "умный дом: найти", "home_control": "умный дом",
+  "ring.set": "кольцо", "ring.reset": "кольцо как обычно", "display.show": "экран", "display.reset": "экран как обычно",
+  "sensors.get": "датчики", "ring_set": "кольцо",
 };
 
 function deviceName(sessionOrDevice) {
@@ -270,8 +272,9 @@ function renderDetail() {
     loadLive(d.session);
   }
   const caps = new Set(d.capabilities);
+  // data-cap lists actions; the element shows if the device has any of them.
   for (const c of $$("[data-cap]", box)) {
-    c.hidden = c.dataset.cap === "say" ? false : !caps.has(c.dataset.cap);
+    c.hidden = c.dataset.cap === "say" ? false : !c.dataset.cap.split(" ").some((a) => caps.has(a));
   }
   const prof = profileOf(d);
   f(box, "name").textContent = prof.name ? `${prof.name} · ${d.device_id}` : d.device_id || "колонка";
@@ -327,6 +330,48 @@ function renderDetail() {
     f(box, "now").textContent = live.media.playing ? `▶ ${live.media.title || "играет"}` : "Ничего не играет";
   }
   renderBT(box, d.session, live.bt);
+  renderSurface(box, live.surface);
+}
+
+const sceneNames = {
+  solid: "ровный цвет", breathe: "дыхание", spin: "бегущий огонь", pulse: "пульс", rainbow: "радуга", off: "погашено",
+  listening: "«слушаю»", thinking: "«думаю»", speaking: "«говорю»", announcing: "«объявляю»", error: "«ошибка»", disconnected: "«нет связи»",
+};
+const displayModeNames = { clock: "часы", off: "погашен", sleep: "спит", wake: "не засыпает", face: "лицо" };
+const keyNames = { voice: "центральная", next: "следующий трек", mic: "микрофон", volume_up: "громче", volume_down: "тише" };
+
+// left returns how long an override still lasts, e.g. "ещё 9 мин".
+function left(o) {
+  const s = Math.max(0, Math.round((Date.parse(o.until) - Date.now()) / 1000));
+  if (s < 60) return `ещё ${s} с`;
+  if (s < 3600) return `ещё ${Math.ceil(s / 60)} мин`;
+  return `ещё ${Math.floor(s / 3600)} ч ${Math.round((s % 3600) / 60)} мин`;
+}
+
+// renderSurface shows the ring and display overrides and the sensors.
+function renderSurface(box, s) {
+  if (!s) return;
+  const r = s.ring;
+  f(box, "ring-now").textContent = r
+    ? `Сейчас: ${sceneNames[r.scene] || r.scene}${r.color && ["solid", "breathe", "spin", "pulse"].includes(r.scene) ? " #" + r.color : ""}, ${left(r)}.`
+    : "Сейчас кольцо показывает, что делает Маруся.";
+  const dsp = s.display;
+  f(box, "disp-now").textContent = dsp
+    ? `Сейчас: ${dsp.mode === "text" ? `текст «${dsp.text}»` : displayModeNames[dsp.mode] || dsp.mode}${dsp.brightness ? `, яркость ${dsp.brightness}%` : ""}, ${left(dsp)}.`
+    : "Сейчас на экране лицо Маруси.";
+  const bri = f(box, "disp-bri");
+  if (document.activeElement !== bri) {
+    bri.value = dsp?.brightness || 0;
+    paintRange(bri);
+    f(box, "disp-bri-value").textContent = bri.value > 0 ? `${bri.value}%` : "по датчику";
+  }
+  f(box, "sf-asleep").textContent = s.has_display ? (s.asleep ? "лицо спит" : "") : "";
+  const facts = [["Состояние", stateName[s.state] || s.state]];
+  if (s.has_light) facts.push(["Освещённость", s.lux != null ? `${s.lux < 10 ? s.lux.toFixed(1) : Math.round(s.lux)} лк` : "—"]);
+  if (s.has_display) facts.push(["Лицо", s.asleep ? "спит" : "не спит"]);
+  facts.push(["Микрофон", s.mic_muted ? "выключен кнопкой" : "включён"]);
+  if (s.key) facts.push(["Последняя кнопка", `${keyNames[s.key] || s.key}, ${ago(s.key_at)}`]);
+  f(box, "sensors").replaceChildren(...facts.map(([k, v]) => el("div", {}, el("dt", { text: k }), el("dd", { text: v }))));
 }
 
 const f = (root, name) => root.querySelector(`[data-f="${name}"]`);
@@ -421,6 +466,7 @@ async function loadLive(session) {
   if (caps.has("media.status")) {
     jobs.push(command(session, "media.status").then((r) => { live.media = r.data; }));
   }
+  if (caps.has("sensors.get")) jobs.push(loadSurface(session));
   await Promise.allSettled(jobs);
   if (state.selected === session) renderDetail();
 }
@@ -526,6 +572,61 @@ function wireDetail(box, session) {
     lightSoon();
   });
 
+  // Ring and display: overrides that end by themselves after "Держать".
+  const hold = () => Number(f(box, "sf-hold").value);
+  const surfaceCmd = async (btn, action, args) => {
+    const r = await run(btn, () => command(session, action, args));
+    if (r) {
+      await loadSurface(session).catch(() => {});
+      renderDetail();
+    }
+    return r;
+  };
+  const ringArgs = () => ({
+    scene: f(box, "ring-scene").value,
+    color: f(box, "ring-color").value.replace("#", ""),
+    brightness: Number(f(box, "ring-bri").value),
+    seconds: hold(),
+  });
+  f(box, "ring-apply").addEventListener("click", (e) => surfaceCmd(e.target, "ring.set", ringArgs()));
+  f(box, "ring-reset").addEventListener("click", (e) => surfaceCmd(e.target, "ring.reset", {}));
+  // Like the night light, a new colour or brightness applies at once.
+  let ringTimer;
+  const ringSoon = () => {
+    clearTimeout(ringTimer);
+    ringTimer = setTimeout(() => surfaceCmd(null, "ring.set", ringArgs()), 250);
+  };
+  f(box, "ring-color").addEventListener("input", ringSoon);
+  f(box, "ring-scene").addEventListener("change", ringSoon);
+  f(box, "ring-bri").addEventListener("input", (e) => {
+    f(box, "ring-bri-value").textContent = e.target.value;
+    ringSoon();
+  });
+
+  const dispBri = () => Number(f(box, "disp-bri").value);
+  f(box, "disp-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = f(box, "disp-text").value.trim();
+    if (!text) return;
+    if (/[^\x20-\x7e]/.test(text)) {
+      toast("Экран показывает только латиницу, цифры и знаки", true);
+      return;
+    }
+    await surfaceCmd($("button", e.target), "display.show", { mode: "text", text, brightness: dispBri(), seconds: hold() });
+  });
+  for (const b of $$("[data-disp]", box)) {
+    b.addEventListener("click", () => surfaceCmd(b, "display.show", { mode: b.dataset.disp, brightness: dispBri(), seconds: hold() }));
+  }
+  f(box, "disp-reset").addEventListener("click", (e) => surfaceCmd(e.target, "display.reset", {}));
+  const bri = f(box, "disp-bri");
+  bri.addEventListener("input", () => (f(box, "disp-bri-value").textContent = bri.value > 0 ? `${bri.value}%` : "по датчику"));
+  // Brightness keeps what the display shows now (the face if nothing).
+  bri.addEventListener("change", () => {
+    const cur = live().surface?.display;
+    if (!cur && dispBri() === 0) return;
+    surfaceCmd(null, "display.show", { mode: cur?.mode || "face", text: cur?.text, brightness: dispBri(), seconds: hold() });
+  });
+
   for (const b of $$("[data-media]", box)) {
     b.addEventListener("click", async () => {
       await run(b, () => command(session, "media.control", { operation: b.dataset.media }));
@@ -549,6 +650,19 @@ function wireDetail(box, session) {
     setTimeout(() => loadLive(session), 1500);
   });
 }
+
+async function loadSurface(session) {
+  const r = await command(session, "sensors.get");
+  (state.live[session] ||= {}).surface = r.data;
+}
+
+// The sensors change on their own: refresh them while the device is shown.
+setInterval(async () => {
+  const d = state.devices.find((x) => x.session === state.selected);
+  if (!d || !d.capabilities.includes("sensors.get") || document.hidden || $("#tab-devices")?.hidden) return;
+  try { await loadSurface(d.session); } catch { return; }
+  if (state.selected === d.session) renderDetail();
+}, 5000);
 
 async function loadBT(session) {
   const r = await command(session, "bluetooth.devices");

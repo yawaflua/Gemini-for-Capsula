@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -408,7 +409,11 @@ func (s *session) onMessage(ctx context.Context, m *models.Message) {
 		}
 		go func() {
 			res := s.a.dispatcher.Execute(ctx, cmd)
-			s.a.log.Info("command executed", "action", cmd.Action, "ok", res.OK, "err", res.Error)
+			level := slog.LevelInfo
+			if cmd.Action == models.ActionSensorsGet && res.OK {
+				level = slog.LevelDebug // the web panel polls it
+			}
+			s.a.log.Log(ctx, level, "command executed", "action", cmd.Action, "ok", res.OK, "err", res.Error)
 			s.send(ctx, &models.Message{Type: models.TypeCommandResult, TurnID: m.TurnID, CommandResult: res})
 		}()
 

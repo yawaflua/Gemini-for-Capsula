@@ -881,7 +881,8 @@ func (d *deviceSession) command(ctx context.Context, turnID, id string, action m
 	start := time.Now()
 	// The panel polls the state of the speaker; only actions are history.
 	quiet := source == SourcePanel && (action == models.ActionVolumeGet ||
-		action == models.ActionMediaStatus || action == models.ActionBluetoothDevices)
+		action == models.ActionMediaStatus || action == models.ActionBluetoothDevices ||
+		action == models.ActionSensorsGet)
 	publish := func(ev Event) {
 		if !quiet {
 			d.srv.events.publish(ev)
@@ -889,7 +890,12 @@ func (d *deviceSession) command(ctx context.Context, turnID, id string, action m
 	}
 	ev := Event{Kind: EventCommand, Session: d.id, Device: d.hello.DeviceID, Source: source, Name: string(action), Args: args}
 	cmd := &models.Command{ID: id, Action: action, Args: args}
-	d.log.Info("command", "action", cmd.Action, "args", cmd.Args, "source", source)
+	// The panel polls the sensors every few seconds: keep that out of the log.
+	level := slog.LevelInfo
+	if quiet && action == models.ActionSensorsGet {
+		level = slog.LevelDebug
+	}
+	d.log.Log(ctx, level, "command", "action", cmd.Action, "args", cmd.Args, "source", source)
 	if err := d.send(&models.Message{Type: models.TypeCommand, TurnID: turnID, Command: cmd}); err != nil {
 		err = fmt.Errorf("device unreachable: %w", err)
 		ev.Error = err.Error()
@@ -904,7 +910,7 @@ func (d *deviceSession) command(ctx context.Context, turnID, id string, action m
 		if !ok {
 			return nil, errCommandCancelled
 		}
-		d.log.Info("command result", "action", cmd.Action, "ok", r.OK, "err", r.Error)
+		d.log.Log(ctx, level, "command result", "action", cmd.Action, "ok", r.OK, "err", r.Error)
 		ev.Result, ev.Error, ev.LatencyMS = r.Data, r.Error, time.Since(start).Milliseconds()
 		publish(ev)
 		return r, nil
@@ -1046,7 +1052,7 @@ func (d *deviceSession) forget() error {
 
 // supports reports whether the device can execute action.
 func (d *deviceSession) supports(action models.Action) bool {
-	if _, ok := tools.Lookup(tools.NameOf(action)); !ok {
+	if !tools.Known(action) {
 		return false
 	}
 	return len(d.hello.Capabilities) == 0 || slices.Contains(d.hello.Capabilities, action)

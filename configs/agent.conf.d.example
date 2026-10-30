@@ -27,6 +27,10 @@ MARUSYA_BT_PAIR_COMMAND=auto
 
 MARUSYA_MPV_SOCKET=/tmp/mpv.sock
 
+# Publish the LED ring, display and sensors on the system D-Bus as
+# ru.marusya.Agent (needs /etc/dbus-1/system.d/ru.marusya.Agent.conf).
+MARUSYA_DBUS=true
+
 MARUSYA_AGENT_DIR=/tmp/marusya
 MARUSYA_AGENT_ARCH=arm64
 

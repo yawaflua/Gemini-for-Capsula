@@ -273,6 +273,70 @@
     </div>
   </div>
 
+  <div class="card surface" data-cap="ring.set display.show sensors.get">
+    <h3>Кольцо и экран <span class="value muted" data-f="sf-asleep"></span></h3>
+    <div class="surface-grid">
+      <div data-cap="ring.set">
+        <h4>Кольцо</h4>
+        <div class="row">
+          <label class="color"><input type="color" data-f="ring-color" value="#0040ff"><span>Цвет</span></label>
+          <select data-f="ring-scene" aria-label="Анимация">
+            <option value="solid">ровный цвет</option>
+            <option value="breathe">дыхание</option>
+            <option value="spin">бегущий огонь</option>
+            <option value="pulse">пульс</option>
+            <option value="rainbow">радуга</option>
+            <option value="listening">как «слушаю»</option>
+            <option value="thinking">как «думаю»</option>
+            <option value="speaking">как «говорю»</option>
+            <option value="announcing">как «объявляю»</option>
+            <option value="error">как «ошибка»</option>
+            <option value="off">погасить</option>
+          </select>
+        </div>
+        <label class="grow surface-range">
+          <span class="muted small-text">Яркость <span data-f="ring-bri-value">50</span>%</span>
+          <input type="range" min="1" max="100" value="50" data-f="ring-bri">
+        </label>
+        <div class="row">
+          <button class="btn tonal small" data-f="ring-apply">Показать</button>
+          <button class="btn text small" data-f="ring-reset" data-cap="ring.reset">Как обычно</button>
+        </div>
+        <p class="hint" data-f="ring-now"></p>
+      </div>
+      <div data-cap="display.show">
+        <h4>Экран</h4>
+        <form class="say" data-f="disp-form">
+          <input data-f="disp-text" maxlength="4" placeholder="Текст, до 4 знаков" autocomplete="off" aria-label="Текст на экране">
+          <button class="btn tonal" type="submit">Показать</button>
+        </form>
+        <div class="row">
+          <button class="btn tonal small" data-disp="clock">Часы</button>
+          <button class="btn tonal small" data-disp="sleep">Спать</button>
+          <button class="btn tonal small" data-disp="wake">Не спать</button>
+          <button class="btn tonal small" data-disp="off">Погасить</button>
+          <button class="btn text small" data-f="disp-reset" data-cap="display.reset">Как обычно</button>
+        </div>
+        <label class="grow surface-range">
+          <span class="muted small-text">Яркость <span data-f="disp-bri-value">по датчику</span></span>
+          <input type="range" min="0" max="100" value="0" data-f="disp-bri" aria-label="Яркость экрана, 0 — по датчику света">
+        </label>
+        <p class="hint" data-f="disp-now"></p>
+      </div>
+    </div>
+    <div class="row" data-cap="ring.set display.show">
+      <label class="muted small-text" for="sf-hold">Держать</label>
+      <select data-f="sf-hold" id="sf-hold" class="surface-hold">
+        <option value="60">1 минуту</option>
+        <option value="600" selected>10 минут</option>
+        <option value="3600">1 час</option>
+        <option value="43200">12 часов</option>
+      </select>
+    </div>
+    <p class="hint" data-cap="ring.set display.show">Потом колонка сама вернётся к обычному виду. Когда Маруся слушает или отвечает, кольцо и экран показывают это поверх.</p>
+    <dl class="facts" data-f="sensors" data-cap="sensors.get"></dl>
+  </div>
+
   <div class="card" data-f="alarms-card">
     <h3>Будильники</h3>
     <ul class="bt" data-f="alarms"></ul>

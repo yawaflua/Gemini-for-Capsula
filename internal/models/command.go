@@ -60,6 +60,25 @@ const (
 	// "color" (RRGGBB, optional), "brightness" (1..100, optional).
 	ActionLightNight Action = "light.night"
 
+	// ActionRingSet takes the LED ring over for a while. Args: "scene"
+	// (one of [RingScenes], default "solid"), "color" (RRGGBB, optional),
+	// "brightness" (1..100, optional), "seconds" (optional, see
+	// [DefaultOverride] and [MaxOverride]). The assistant states still show
+	// on top; the ring returns to them by itself when the time is up.
+	ActionRingSet Action = "ring.set"
+	// ActionRingReset returns the LED ring to the automatic state indicator.
+	ActionRingReset Action = "ring.reset"
+	// ActionDisplayShow takes the 7-segment display over for a while.
+	// Args: "mode" (one of [DisplayModes]), "text" (up to 4 characters,
+	// mode "text"), "brightness" (1..100, optional; 0 follows the light
+	// sensor), "seconds" (optional, as for ring.set).
+	ActionDisplayShow Action = "display.show"
+	// ActionDisplayReset returns the display to the automatic face.
+	ActionDisplayReset Action = "display.reset"
+	// ActionSensorsGet returns the [SurfaceState]: ambient light, assistant
+	// state, the last touch key and the current ring and display overrides.
+	ActionSensorsGet Action = "sensors.get"
+
 	// ActionConversationEnd ends the dialogue: after the current reply the
 	// device stops listening (no follow-up) and the server forgets the
 	// conversation context. Executed by the agent itself, not a controller.

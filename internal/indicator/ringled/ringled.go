@@ -19,6 +19,7 @@
 package ringled
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/yawaflua/marusya-gemini/internal/controller"
 	"github.com/yawaflua/marusya-gemini/internal/indicator"
+	"github.com/yawaflua/marusya-gemini/internal/models"
 )
 
 // Colours of the states.
@@ -72,6 +74,8 @@ type Ring struct {
 	volume      int
 	volMuted    bool
 	volumeUntil time.Time
+	manual      *look // set with Override, nil when automatic
+	manualUntil time.Time
 
 	notify chan struct{}
 	done   chan struct{}
@@ -180,6 +184,30 @@ func (r *Ring) NightLight(context.Context) (bool, error) {
 }
 
 // look is what the ring should show; equal looks need no new scene.
+// DefaultOverride is the colour of an override that gives none.
+const DefaultOverride = "ffffff"
+
+// Override shows a manual look (see [models.RingScenes]) until req.Hold
+// passes or [Ring.ResetOverride] is called. The assistant states and the
+// volume still show on top of it; the override wins over the night light
+// and the mute indicator. It returns when the override ends.
+func (r *Ring) Override(req models.RingRequest) (time.Time, error) {
+	if err := req.Normalize(); err != nil {
+		return time.Time{}, err
+	}
+	c, _ := ParseRGB(cmp.Or(req.Color, DefaultOverride))
+	until := time.Now().Add(req.Hold)
+	r.update(func() {
+		r.manual = &look{kind: "manual:" + req.Scene, color: c, bright: req.Brightness}
+		r.manualUntil = until
+	})
+	return until, nil
+}
+
+// ResetOverride returns the ring to the automatic state indicator.
+func (r *Ring) ResetOverride() { r.update(func() { r.manual = nil }) }
+
+
 type look struct {
 	kind   string
 	color  RGB
@@ -200,12 +228,24 @@ func (r *Ring) desired(now time.Time) (look, time.Time) {
 	if r.state == indicator.Error {
 		next = r.errorUntil
 	}
+	if r.manual != nil && !now.Before(r.manualUntil) {
+		r.manual = nil
+	}
+	if r.manual != nil {
+		next = earliest(next, r.manualUntil)
+	}
 	b := r.brightness
 	switch {
 	case now.Before(r.volumeUntil):
 		return look{kind: "volume", bright: b, level: r.volume, muted: r.volMuted}, earliest(next, r.volumeUntil)
 	case r.state != indicator.Idle:
 		return look{kind: r.state.String(), bright: b}, next
+	case r.manual != nil:
+		m := *r.manual
+		if m.bright == 0 {
+			m.bright = b
+		}
+		return m, next
 	case r.muted:
 		return look{kind: "muted", color: colorError, bright: b}, next
 	case r.night != nil:

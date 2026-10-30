@@ -162,6 +162,17 @@ var registry = []Tool{
 		},
 	},
 	{
+		Action: models.ActionRingSet,
+		Description: "Lights the speaker's LED ring in a colour or with an animation for a while (\"сделай кольцо синим\", \"включи радугу\"). " +
+			"It goes back to normal by itself; the night light (light_night) is for a lasting light.",
+		Parameters: []Parameter{
+			{Name: "scene", Type: TypeString, Description: "Look of the ring; default solid. solid, breathe, spin and pulse use the colour.", Enum: []string{"solid", "breathe", "spin", "pulse", "rainbow"}},
+			{Name: "color", Type: TypeString, Description: "Colour as RRGGBB hex, e.g. 0040ff for blue. Omit for white."},
+			{Name: "brightness", Type: TypeInteger, Description: "Brightness in per cent, 1-100. Omit for the default.", Minimum: ptr(1), Maximum: ptr(100)},
+			{Name: "seconds", Type: TypeInteger, Description: "How long to keep it, default 600.", Minimum: ptr(5), Maximum: ptr(models.MaxOverride.Seconds())},
+		},
+	},
+	{
 		Action: models.ActionConversationEnd,
 		Description: "Ends the conversation and stops listening. Call it when the user says goodbye, " +
 			"asks you to stop, be quiet or go away, or is rude and clearly done talking " +
@@ -180,6 +191,22 @@ func enumOf[T ~string](vs []T) []string {
 		out[i] = string(v)
 	}
 	return out
+}
+
+// panelOnly are device actions the web panel (or D-Bus) uses but the model
+// does not get: it may light the ring, the rest is for people.
+var panelOnly = []models.Action{
+	models.ActionRingReset,
+	models.ActionDisplayShow,
+	models.ActionDisplayReset,
+	models.ActionSensorsGet,
+}
+
+// Known reports whether action is a device action the server may send:
+// a tool or a panel-only action.
+func Known(action models.Action) bool {
+	_, ok := Lookup(NameOf(action))
+	return ok || slices.Contains(panelOnly, action)
 }
 
 // All returns every known tool.

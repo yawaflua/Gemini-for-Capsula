@@ -71,6 +71,27 @@ type Light interface {
 // ErrUnsupported is returned for actions without a configured backend.
 var ErrUnsupported = errors.New("not supported on this device")
 
+// Ring is an LED ring that can be taken over by hand. Overrides expire on
+// their own (see [models.RingRequest]).
+type Ring interface {
+	SetRing(ctx context.Context, req models.RingRequest) (models.Override, error)
+	// ResetRing returns the ring to the automatic state indicator.
+	ResetRing(ctx context.Context) error
+}
+
+// Display is a display that can be taken over by hand. Overrides expire
+// on their own (see [models.DisplayRequest]).
+type Display interface {
+	ShowDisplay(ctx context.Context, req models.DisplayRequest) (models.Override, error)
+	// ResetDisplay returns the display to the automatic face.
+	ResetDisplay(ctx context.Context) error
+}
+
+// Sensors reports what the device senses and shows.
+type Sensors interface {
+	Surface(ctx context.Context) (models.SurfaceState, error)
+}
+
 // Dispatcher routes commands to controllers. Nil controllers disable the
 // corresponding actions.
 type Dispatcher struct {
@@ -78,6 +99,9 @@ type Dispatcher struct {
 	Media     Media
 	Bluetooth Bluetooth
 	Light     Light
+	Ring      Ring
+	Display   Display
+	Sensors   Sensors
 }
 
 // Capabilities lists the actions the dispatcher can execute.
@@ -97,6 +121,15 @@ func (d *Dispatcher) Capabilities() []models.Action {
 	}
 	if d.Light != nil {
 		out = append(out, models.ActionLightNight)
+	}
+	if d.Ring != nil {
+		out = append(out, models.ActionRingSet, models.ActionRingReset)
+	}
+	if d.Display != nil {
+		out = append(out, models.ActionDisplayShow, models.ActionDisplayReset)
+	}
+	if d.Sensors != nil {
+		out = append(out, models.ActionSensorsGet)
 	}
 	return out
 }
@@ -216,6 +249,41 @@ func (d *Dispatcher) execute(ctx context.Context, cmd *models.Command) (map[stri
 			return nil, err
 		}
 		return map[string]any{"on": on}, nil
+
+	case models.ActionRingSet:
+		scene, _ := cmd.String("scene")
+		color, _ := cmd.String("color")
+		brightness, _ := cmd.Int("brightness")
+		secs, _ := cmd.Int("seconds")
+		o, err := d.Ring.SetRing(ctx, models.RingRequest{Scene: scene, Color: color, Brightness: brightness, Hold: time.Duration(secs) * time.Second})
+		if err != nil {
+			return nil, err
+		}
+		return o.Map(), nil
+
+	case models.ActionRingReset:
+		return nil, d.Ring.ResetRing(ctx)
+
+	case models.ActionDisplayShow:
+		mode, _ := cmd.String("mode")
+		text, _ := cmd.String("text")
+		brightness, _ := cmd.Int("brightness")
+		secs, _ := cmd.Int("seconds")
+		o, err := d.Display.ShowDisplay(ctx, models.DisplayRequest{Mode: mode, Text: text, Brightness: brightness, Hold: time.Duration(secs) * time.Second})
+		if err != nil {
+			return nil, err
+		}
+		return o.Map(), nil
+
+	case models.ActionDisplayReset:
+		return nil, d.Display.ResetDisplay(ctx)
+
+	case models.ActionSensorsGet:
+		s, err := d.Sensors.Surface(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return s.Map(), nil
 
 	case models.ActionBluetoothDevices:
 		devs, err := d.Bluetooth.Devices(ctx)

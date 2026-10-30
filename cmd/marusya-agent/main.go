@@ -37,6 +37,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/godbus/dbus/v5"
+
 	"github.com/yawaflua/marusya-gemini/internal/agent"
 	"github.com/yawaflua/marusya-gemini/internal/audio/alsa"
 	"github.com/yawaflua/marusya-gemini/internal/config"
@@ -46,6 +48,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/controller/mpv"
 	"github.com/yawaflua/marusya-gemini/internal/controller/playerctl"
 	"github.com/yawaflua/marusya-gemini/internal/controller/stream"
+	"github.com/yawaflua/marusya-gemini/internal/dbusapi"
 	"github.com/yawaflua/marusya-gemini/internal/display/seg7"
 	"github.com/yawaflua/marusya-gemini/internal/evdev"
 	"github.com/yawaflua/marusya-gemini/internal/indicator"
@@ -55,6 +58,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/media"
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/sensor/light"
+	"github.com/yawaflua/marusya-gemini/internal/surface"
 	"github.com/yawaflua/marusya-gemini/internal/touchkeys"
 	"github.com/yawaflua/marusya-gemini/internal/vad"
 	"github.com/yawaflua/marusya-gemini/internal/wakeword"
@@ -108,6 +112,8 @@ var (
 
 	lightSensor = flag.String("light_sensor", config.Env("MARUSYA_LIGHT_SENSOR", "auto"), `Ambient light sensor: "auto", an IIO device directory, or empty to disable. Dims the display and puts the face to sleep in the dark.`)
 
+	dbusService = flag.Bool("dbus", config.EnvBool("MARUSYA_DBUS", true), "Publish the LED ring, display and sensors on the system D-Bus as "+dbusapi.Name+" (needs deploy/agent/ru.marusya.Agent.conf).")
+
 	touchKeys      = flag.String("touch_keys", config.Env("MARUSYA_TOUCH_KEYS", "auto"), `Touch panel: "auto" (find "Hynitron CSK05T"), an evdev node, or empty to disable.`)
 	touchCenterKey = flag.Uint("touch_center_key", touchkeys.KeyVoice, "Key code of the centre key that activates the assistant.")
 
@@ -127,44 +133,37 @@ func main() {
 	}
 }
 
-// startLightSensor polls the ambient light sensor and feeds the face.
-func startLightSensor(ctx context.Context, f *face.Face, log *slog.Logger) error {
+// openLightSensor opens the ambient light sensor from -light_sensor. The
+// surface polls it, dims the face and puts it to sleep in the dark.
+func openLightSensor() (*light.Sensor, error) {
 	var s *light.Sensor
 	if *lightSensor == "auto" {
 		var err error
 		if s, err = light.Find(); err != nil {
-			return err
+			return nil, err
 		}
 	} else {
 		s = light.Open(*lightSensor)
 	}
 	if _, err := s.Lux(); err != nil {
-		return err
+		return nil, err
 	}
-	log.Info("ambient light sensor enabled", "sensor", s.Name(), "dir", s.Dir())
-	go func() {
-		t := time.NewTicker(2 * time.Second)
-		defer t.Stop()
-		failing := false
-		for {
-			lux, err := s.Lux()
-			switch {
-			case err == nil:
-				log.Debug("ambient light", "lux", lux)
-				f.SetAmbient(lux)
-				failing = false
-			case !failing:
-				log.Warn("ambient light sensor read failed", "err", err)
-				failing = true
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			}
-		}
-	}()
-	return nil
+	return s, nil
+}
+
+// serveDBus publishes the surface on the system bus until ctx is done.
+// The service is optional: without a bus or a policy the agent goes on.
+func serveDBus(ctx context.Context, s *surface.Surface, log *slog.Logger) {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		log.Info("D-Bus service disabled: no system bus", "err", err)
+		return
+	}
+	defer conn.Close()
+	svc := &dbusapi.Service{Surface: s, Version: version, Logger: log}
+	if err := svc.Serve(ctx, conn); err != nil {
+		log.Info("D-Bus service disabled; is /etc/dbus-1/system.d/ru.marusya.Agent.conf installed?", "err", err)
+	}
 }
 
 // newMedia picks the media controller according to -media.
@@ -269,6 +268,34 @@ func run() error {
 		}
 	}
 
+	// The surface lets the panel, D-Bus and the voice model take the ring
+	// and the display over for a while, and reports the sensors.
+	surf := &surface.Surface{Logger: log}
+	if ring != nil {
+		surf.Ring = ring
+		dispatcher.Ring = surf
+	}
+	if display != nil {
+		surf.Face = display
+		dispatcher.Display = surf
+	}
+	if *lightSensor != "" {
+		if s, err := openLightSensor(); err == nil {
+			surf.Light = s
+			log.Info("ambient light sensor enabled", "sensor", s.Name(), "dir", s.Dir())
+		} else {
+			log.Info("ambient light sensor disabled", "err", err)
+		}
+	}
+	if surf.Ring != nil || surf.Face != nil || surf.Light != nil {
+		dispatcher.Sensors = surf
+	}
+	indicators = append(indicators, surf)
+	go surf.Run(ctx)
+	if *dbusService {
+		go serveDBus(ctx, surf, log)
+	}
+
 	// Show every volume change on the display and the ring: the hardware keys did it
 	// already, now voice commands and the web panel do too.
 	if dispatcher.Volume != nil && (display != nil || ring != nil) {
@@ -296,7 +323,7 @@ func run() error {
 			cfg.Device = *touchKeys
 		}
 		if _, err := evdev.FindByName(cfg.Name); cfg.Device != "" || err == nil {
-			touch = &touchkeys.Panel{Config: cfg, Dispatcher: dispatcher, Logger: log}
+			touch = &touchkeys.Panel{Config: cfg, Dispatcher: dispatcher, Logger: log, OnKey: surf.KeyEvent}
 			if display != nil {
 				touch.Display = display
 			}
@@ -363,6 +390,7 @@ func run() error {
 	if touch != nil {
 		touch.OnMicMute = func(muted bool) {
 			a.SetMicMuted(muted)
+			surf.SetMicMuted(muted)
 			if display != nil {
 				display.SetMuted(muted)
 			}
@@ -373,11 +401,6 @@ func run() error {
 	}
 	if display != nil {
 		defer display.Close()
-		if *lightSensor != "" {
-			if err := startLightSensor(ctx, display, log); err != nil {
-				log.Info("ambient light sensor disabled", "err", err)
-			}
-		}
 	}
 	log.Info("starting agent", "version", version, "device", id, "server", *serverURL, "capabilities", len(dispatcher.Capabilities()))
 	return a.Run(ctx)
