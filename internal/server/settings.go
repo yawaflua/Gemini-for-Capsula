@@ -168,7 +168,7 @@ func (c *Config) defaultSettings() Settings {
 	if kws, err := wake.ParseKeywords(s.WakeWords); err == nil {
 		s.WakeWords = strings.Join(kws, ", ")
 	}
-	if t, ok := c.Provider.(provider.Tuner); ok {
+	if t, ok := provider.AsTuner(c.Provider); ok {
 		tn := t.Tuning()
 		s.Model, s.Voice = tn.Model, tn.Voice
 	}
@@ -227,7 +227,7 @@ func (s *Server) Settings() Settings {
 // UpdateSettings validates and applies new settings, saves them to
 // Config.SettingsFile and reopens idle model sessions so they take effect.
 func (s *Server) UpdateSettings(n Settings) (Settings, error) {
-	tuner, tunable := s.cfg.Provider.(provider.Tuner)
+	tuner, tunable := provider.AsTuner(s.cfg.Provider)
 	if n.SystemInstruction == "" {
 		n.SystemInstruction = s.defaults.SystemInstruction
 	}
@@ -244,6 +244,9 @@ func (s *Server) UpdateSettings(n Settings) (Settings, error) {
 	s.smu.Unlock()
 	if tunable {
 		tuner.Tune(provider.Tuning{Model: n.Model, Voice: n.Voice})
+		if s.cfg.Providers != nil {
+			s.cfg.Providers.SetTuning(provider.Tuning{Model: n.Model, Voice: n.Voice})
+		}
 	}
 	s.cfg.Logger.Info("settings changed", "language", n.Language, "location", n.DefaultLocation,
 		"timezone", n.DefaultTimeZone, "model", n.Model, "voice", n.Voice)

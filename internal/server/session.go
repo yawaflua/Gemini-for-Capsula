@@ -53,7 +53,8 @@ type deviceSession struct {
 	log       *slog.Logger
 	ctx       context.Context
 	hello     *models.Hello
-	vad       bool // the provider detects the end of speech
+	vad       bool               // the provider detects the end of speech
+	format    models.AudioFormat // the format of the model's speech, told the device in ready
 	remote    string
 	connected time.Time
 
@@ -234,6 +235,7 @@ func (d *deviceSession) handshake(ctx context.Context) error {
 	}
 	d.hello = h
 	d.vad = d.cfg.ServerVAD && provider.SupportsServerVAD(d.cfg.Provider)
+	d.format = d.cfg.Provider.OutputFormat()
 	d.log = d.log.With("device", h.DeviceID)
 	d.log.Info("device connected", "capabilities", len(h.Capabilities), "language", h.Language,
 		"location", h.Location, "timezone", h.TimeZone)
@@ -242,7 +244,7 @@ func (d *deviceSession) handshake(ctx context.Context) error {
 		Type: models.TypeReady,
 		Ready: &models.Ready{
 			SessionID:    d.id,
-			OutputFormat: d.cfg.Provider.OutputFormat(),
+			OutputFormat: d.format,
 			ServerVAD:    d.vad,
 		},
 	})
@@ -384,6 +386,13 @@ func (d *deviceSession) session() (provider.Session, error) {
 }
 
 func (d *deviceSession) connect() (provider.Session, error) {
+	if d.stale() {
+		// The device was told another audio format or end-of-speech
+		// detection: it must reconnect to learn the new ones.
+		d.log.Info("provider changed; reconnecting the device")
+		d.conn.Close("provider changed")
+		return nil, errProviderChanged
+	}
 	set := d.srv.Settings()
 	e := d.effective()
 	lang := e.Language
@@ -404,6 +413,28 @@ func (d *deviceSession) connect() (provider.Session, error) {
 	d.log.Info("provider session opened", "provider", d.cfg.Provider.Name(), "latency", time.Since(start))
 	d.srv.events.devicesChanged()
 	return ps, nil
+}
+
+// errProviderChanged means the device must reconnect, see stale.
+var errProviderChanged = errors.New("the provider changed; the device reconnects")
+
+// stale reports whether the provider changed in a way the device must
+// learn from a new handshake.
+func (d *deviceSession) stale() bool {
+	vad := d.cfg.ServerVAD && provider.SupportsServerVAD(d.cfg.Provider)
+	return vad != d.vad || d.cfg.Provider.OutputFormat() != d.format
+}
+
+// providerChanged makes the device use the new provider: an idle one
+// right away, a busy one from its next turn.
+func (d *deviceSession) providerChanged() {
+	d.mu.Lock()
+	d.retiring = d.ps != nil
+	busy := d.inTurn || d.awaiting
+	d.mu.Unlock()
+	if !busy {
+		d.prewarm()
+	}
 }
 
 // prewarm opens a provider session in the background so the next turn does

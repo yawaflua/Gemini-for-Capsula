@@ -18,6 +18,7 @@
 package audio
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"math"
@@ -97,4 +98,25 @@ func Tone(f models.AudioFormat, freqHz float64, durMs int, gain float64) []byte 
 // Silence returns durMs of silence.
 func Silence(f models.AudioFormat, durMs int) []byte {
 	return make([]byte, f.FrameSize(time.Duration(durMs)*time.Millisecond))
+}
+
+// WAV wraps LINEAR16 PCM in a RIFF/WAVE header.
+func WAV(pcm []byte, f models.AudioFormat) []byte {
+	var b bytes.Buffer
+	ch, rate := uint16(f.Channels), uint32(f.SampleRateHertz)
+	w := func(v any) { binary.Write(&b, binary.LittleEndian, v) }
+	b.WriteString("RIFF")
+	w(uint32(36 + len(pcm)))
+	b.WriteString("WAVEfmt ")
+	w(uint32(16))
+	w(uint16(1)) // PCM
+	w(ch)
+	w(rate)
+	w(rate * uint32(ch) * 2)
+	w(ch * 2)
+	w(uint16(16))
+	b.WriteString("data")
+	w(uint32(len(pcm)))
+	b.Write(pcm)
+	return b.Bytes()
 }

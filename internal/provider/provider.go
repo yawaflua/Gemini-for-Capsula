@@ -68,6 +68,38 @@ type Tuner interface {
 	Tune(Tuning)
 }
 
+// TunableReporter is implemented by providers that implement [Tuner] but
+// may not be tunable at the moment, e.g. a switch between providers.
+type TunableReporter interface {
+	Tunable() bool
+}
+
+// AsTuner returns p as a [Tuner] if its model and voice can be changed.
+func AsTuner(p Provider) (Tuner, bool) {
+	t, ok := p.(Tuner)
+	if !ok {
+		return nil, false
+	}
+	if r, ok := p.(TunableReporter); ok && !r.Tunable() {
+		return nil, false
+	}
+	return t, true
+}
+
+// VoiceLister is implemented by providers and synthesizers that know their
+// voices.
+type VoiceLister interface {
+	Voices() []string
+}
+
+// Voices returns the voices of v, or nil if they are unknown.
+func Voices(v any) []string {
+	if l, ok := v.(VoiceLister); ok {
+		return l.Voices()
+	}
+	return nil
+}
+
 // TextSender is implemented by sessions that accept a typed request instead
 // of speech. The reply is delivered like the answer to a spoken turn, ending
 // with [EventTurnComplete].

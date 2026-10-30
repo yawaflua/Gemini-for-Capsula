@@ -41,6 +41,10 @@
         <span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.84a.5.5 0 0 0-.49.42l-.36 2.54a7.3 7.3 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.68 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.38 1.04.7 1.62.94l.36 2.54c.05.24.25.42.49.42h3.84c.24 0 .45-.18.49-.42l.36-2.54a7.3 7.3 0 0 0 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"/></svg></span>
         <span class="tab-label">Настройки</span>
       </button>
+      <button class="tab" role="tab" data-tab="providers" id="providers-tab" hidden>
+        <span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1 17.93A8 8 0 0 1 4.07 13H7v1a2 2 0 0 0 2 2h2v3.93ZM17.9 17.4A2 2 0 0 0 16 16h-1v-3a1 1 0 0 0-1-1H8v-2h2a1 1 0 0 0 1-1V7h2a2 2 0 0 0 2-2v-.41A8 8 0 0 1 17.9 17.4Z"/></svg></span>
+        <span class="tab-label">Провайдеры</span>
+      </button>
     </nav>
     <div class="topbar-right">
       <span id="live" class="live" title="Связь с сервером"><span class="dot"></span><span id="live-text">…</span></span>
@@ -132,6 +136,59 @@
           <span class="saved muted" id="settings-saved" hidden>Сохранено ✓</span>
         </div>
         <p class="hint">Новые настройки применяются к колонкам, которые сейчас молчат, сразу. Если колонка в этот момент разговаривает, они вступят в силу со следующим вопросом. Контекст текущего разговора при этом забывается.</p>
+      </form>
+    </section>
+    <!-- Providers -->
+    <section id="tab-providers" class="tabpane" hidden>
+      <div class="card">
+        <h2>Модели</h2>
+        <p class="muted" id="providers-note"></p>
+        <ul class="prov-list" id="prov-list"></ul>
+        <div class="row"><button class="btn tonal small" id="prov-add" type="button">Добавить провайдера</button></div>
+      </div>
+
+      <form id="prov-form" class="card settings" hidden>
+        <h2 id="prov-form-title">Новый провайдер</h2>
+        <div class="grid2">
+          <label class="field">
+            <span>Название</span>
+            <input id="prov-name" maxlength="64" required placeholder="OpenRouter">
+          </label>
+          <label class="field">
+            <span>Идентификатор <em>— латиницей</em></span>
+            <input id="prov-id" maxlength="32" required pattern="[a-z0-9][a-z0-9_\-]*" placeholder="openrouter" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field span2">
+            <span>Тип</span>
+            <select id="prov-kind"></select>
+          </label>
+          <label class="field span2">
+            <span>Адрес API <em>— для совместимых серверов, пусто — официальный</em></span>
+            <input id="prov-url" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field span2">
+            <span>API-ключ</span>
+            <input id="prov-key" type="password" autocomplete="new-password" spellcheck="false">
+          </label>
+          <label class="field">
+            <span>Модель</span>
+            <input id="prov-model" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Голос</span>
+            <input id="prov-voice" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field span2" id="prov-speech-field">
+            <span>Распознавание и синтез речи <em>— текстовой модели нужен «слух» и «голос»</em></span>
+            <select id="prov-speech"></select>
+          </label>
+        </div>
+        <p id="prov-error" class="error" hidden></p>
+        <div class="actions">
+          <button class="btn primary" type="submit">Сохранить</button>
+          <button class="btn outlined" type="button" id="prov-cancel">Отмена</button>
+        </div>
+        <p class="hint">Ключи хранятся на сервере и в панель не возвращаются: чтобы оставить сохранённый ключ, не заполняйте поле. При смене провайдера колонки переходят на него; если у нового провайдера другой формат звука, колонка на секунду переподключится.</p>
       </form>
     </section>
   </main>

@@ -14,6 +14,8 @@ const state = {
   deviceFilter: "",
   es: null,
   live: {},         // per session: {volume, muted, media, bt}
+  providers: null,  // /api/providers
+  editing: null,    // ID of the provider being edited, "" for a new one
 };
 
 // ---------- API ----------
@@ -154,9 +156,11 @@ async function boot() {
   renderDevices();
   renderHistory();
   renderSettings();
+  await loadProviders().catch(() => {});
   connectEvents();
   let tab = "devices";
   try { tab = localStorage.getItem("marusya-tab") || tab; } catch { /* private mode */ }
+  if ($(`.tab[data-tab="${tab}"]`)?.hidden !== false) tab = "devices";
   selectTab(tab);
 }
 
@@ -192,7 +196,21 @@ function connectEvents() {
     prependEvent(ev);
     // Settings changed in another tab: reload them unless being edited here.
     if (ev.kind === "settings" && $("#tab-settings").hidden) refreshSettings();
+    if (ev.kind === "provider") { refreshInfo(); loadProviders().catch(() => {}); }
   });
+}
+
+// refreshInfo reloads what depends on the provider: its name, model, voice.
+async function refreshInfo() {
+  try {
+    const st = await api("GET", "state");
+    delete st.devices;
+    delete st.history;
+    state.info = st;
+    document.body.classList.toggle("tunable", st.tunable);
+    renderServerLine();
+    renderSettings();
+  } catch { /* ignore */ }
 }
 
 async function refreshSettings() {
@@ -640,6 +658,7 @@ function renderEvent(ev) {
         connect: "Колонка подключилась",
         disconnect: "Колонка отключилась",
         settings: "Настройки изменены",
+        provider: `Модель сменилась: ${ev.name || ""}`,
         error: ev.error || "Ошибка",
       }[ev.kind] || ev.kind;
       return el("li", { class: "ev compact" }, el("div", { class: "ev-meta" }, ...meta.childNodes, el("span", { text: "· " + text })));
@@ -728,6 +747,137 @@ resetBtn.addEventListener("click", async () => {
   resetBtn.textContent = "Вернуть как при запуске";
   const r = await run(resetBtn, () => api("DELETE", "settings"), "Настройки сброшены");
   if (r) { state.info.settings = r; renderSettings(); }
+});
+
+// ---------- providers ----------
+
+async function loadProviders() {
+  const p = await api("GET", "providers");
+  state.providers = p;
+  $("#providers-tab").hidden = !p.enabled;
+  if (p.enabled) renderProviders();
+}
+
+const kindOf = (k) => (state.providers.kinds || []).find((x) => x.kind === k);
+
+function renderProviders() {
+  const p = state.providers;
+  $("#providers-note").textContent = (p.saved
+    ? "Провайдеры и их ключи хранятся на сервере."
+    : "Провайдеры действуют до перезапуска сервера. Чтобы они сохранялись, задайте MARUSYA_PROVIDERS_FILE.") +
+    " Голосовые модели (Gemini Live, OpenAI Realtime) слушают и отвечают сами; текстовым нужны распознавание и синтез речи.";
+  const list = $("#prov-list");
+  list.replaceChildren();
+  for (const v of p.providers) {
+    const active = v.id === p.active;
+    const kind = v.read_only ? "задан в server.env" : (kindOf(v.kind)?.label || v.kind);
+    const details = v.read_only ? kind : [kind, v.model, v.base_url].filter(Boolean).join(" · ");
+    const actions = el("div", { class: "row" },
+      active ? el("span", { class: "badge idle", text: "используется" }) :
+        el("button", { class: "btn primary small", type: "button", text: "Использовать", onclick: (e) => activateProvider(e.target, v.id) }),
+      v.read_only ? null : el("button", { class: "btn text small", type: "button", text: "Изменить", onclick: () => editProvider(v) }),
+      v.read_only || active ? null : el("button", { class: "btn text small", type: "button", text: "Удалить", onclick: (e) => deleteProvider(e.target, v) }));
+    list.append(el("li", { class: "prov" + (active ? " active" : "") },
+      el("div", { class: "prov-main" }, el("b", { text: v.name }), el("small", { text: details }),
+        !v.read_only && !v.has_key ? el("small", { text: "без ключа" }) : null),
+      actions));
+  }
+}
+
+async function activateProvider(btn, id) {
+  const r = await run(btn, () => api("POST", `providers/${encodeURIComponent(id)}/activate`), "Модель переключена");
+  if (r) { state.providers = r; renderProviders(); refreshInfo(); }
+}
+
+// Two-step delete instead of confirm(), which may be blocked.
+async function deleteProvider(btn, v) {
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "Точно удалить?";
+    setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Удалить"; }, 4000);
+    return;
+  }
+  const r = await run(btn, () => api("DELETE", `providers/${encodeURIComponent(v.id)}`), "Провайдер удалён");
+  if (r) { state.providers = r; renderProviders(); }
+}
+
+function fillKinds() {
+  const sel = $("#prov-kind");
+  if (sel.children.length) return;
+  sel.append(...state.providers.kinds.map((k) => el("option", { value: k.kind, text: k.label })));
+}
+
+// updateProviderForm adapts the form to the chosen kind.
+function updateProviderForm() {
+  const k = kindOf($("#prov-kind").value);
+  if (!k) return;
+  $("#prov-url").placeholder = k.base_url;
+  $("#prov-model").placeholder = k.model;
+  $("#prov-speech-field").hidden = !k.pipeline;
+  const cur = $("#prov-speech").value;
+  const opts = [el("option", { value: "", text: "Gemini сервера (GEMINI_API_KEY)" })];
+  if (k.kind === "openai") opts.push(el("option", { value: "self", text: "Этот же API (/audio/transcriptions и /audio/speech)" }));
+  for (const v of state.providers.providers) {
+    if (v.read_only || v.id === state.editing || !["gemini", "openai", "openai-realtime"].includes(v.kind)) continue;
+    opts.push(el("option", { value: v.id, text: `Ключ провайдера «${v.name}»` }));
+  }
+  $("#prov-speech").replaceChildren(...opts);
+  $("#prov-speech").value = [...$("#prov-speech").options].some((o) => o.value === cur) ? cur : "";
+}
+
+function editProvider(v) {
+  fillKinds();
+  state.editing = v ? v.id : "";
+  $("#prov-form-title").textContent = v ? `Изменить «${v.name}»` : "Новый провайдер";
+  $("#prov-id").value = v ? v.id : "";
+  $("#prov-id").disabled = !!v;
+  $("#prov-name").value = v ? v.name : "";
+  $("#prov-kind").value = v ? v.kind : "openai";
+  $("#prov-url").value = v ? v.base_url || "" : "";
+  $("#prov-key").value = "";
+  $("#prov-key").placeholder = v && v.has_key ? "Сохранён — оставьте пустым, чтобы не менять" : "";
+  $("#prov-model").value = v ? v.model || "" : "";
+  $("#prov-voice").value = v ? v.voice || "" : "";
+  updateProviderForm();
+  $("#prov-speech").value = v ? v.speech || "" : "";
+  $("#prov-error").hidden = true;
+  $("#prov-form").hidden = false;
+  $("#prov-name").focus();
+}
+
+$("#prov-add").addEventListener("click", () => editProvider(null));
+$("#prov-cancel").addEventListener("click", () => { $("#prov-form").hidden = true; state.editing = null; });
+$("#prov-kind").addEventListener("change", updateProviderForm);
+
+$("#prov-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#prov-error");
+  err.hidden = true;
+  const id = $("#prov-id").value.trim().toLowerCase();
+  const body = {
+    name: $("#prov-name").value,
+    kind: $("#prov-kind").value,
+    base_url: $("#prov-url").value,
+    api_key: $("#prov-key").value,
+    model: $("#prov-model").value,
+    voice: $("#prov-voice").value,
+    speech: $("#prov-speech-field").hidden ? "" : $("#prov-speech").value,
+  };
+  const btn = $("button[type=submit]", e.target);
+  btn.disabled = true;
+  try {
+    state.providers = await api("PUT", `providers/${encodeURIComponent(id)}`, body);
+    renderProviders();
+    $("#prov-form").hidden = true;
+    state.editing = null;
+    toast("Провайдер сохранён");
+    if (state.providers.active === id) refreshInfo();
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // Refresh relative times.

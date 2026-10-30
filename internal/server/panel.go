@@ -32,6 +32,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/alarms"
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
+	"github.com/yawaflua/marusya-gemini/internal/speech/geminispeech"
 	"github.com/yawaflua/marusya-gemini/internal/tools"
 )
 
@@ -48,15 +49,6 @@ const (
 	// which the panel never allows.
 	csrfHeader = "X-Marusya-Panel"
 )
-
-// voices lists the prebuilt Gemini voices, offered as suggestions.
-var voices = []string{
-	"Kore", "Puck", "Charon", "Aoede", "Fenrir", "Leda", "Orus", "Zephyr",
-	"Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
-	"Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
-	"Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi",
-	"Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
-}
 
 // panelAuth keeps the logins of the web panel in memory: a restart logs
 // everyone out.
@@ -152,6 +144,7 @@ func (s *Server) routePanel() {
 	s.mux.HandleFunc("POST /panel/api/alarms/{device}", s.panelAPI(s.handleAddAlarm))
 	s.mux.HandleFunc("DELETE /panel/api/alarms/{device}/{id}", s.panelAPI(s.handleDeleteAlarm))
 	s.mux.HandleFunc("DELETE /panel/api/settings", s.panelAPI(s.handleResetSettings))
+	s.registerProviderAPI()
 }
 
 func securityHeaders(h http.Handler) http.Handler {
@@ -263,7 +256,7 @@ type panelTool struct {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
-	_, tunable := s.cfg.Provider.(provider.Tuner)
+	_, tunable := provider.AsTuner(s.cfg.Provider)
 	var actions []panelTool
 	for _, t := range tools.All() {
 		actions = append(actions, panelTool{Action: t.Action, Description: t.Description})
@@ -278,7 +271,7 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 		Wake:     s.cfg.WakeURL != "",
 		Settings: s.Settings(),
 		Defaults: s.defaults,
-		Voices:   voices,
+		Voices:   panelVoices(s.cfg.Provider),
 		Actions:  actions,
 		Devices:  s.Devices(),
 		History:  s.events.history(),
@@ -526,4 +519,13 @@ func (s *Server) handleDeleteAlarm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": n})
+}
+
+// panelVoices returns the voices offered as suggestions: those of the
+// provider, or the prebuilt Gemini voices if it does not know them.
+func panelVoices(p provider.Provider) []string {
+	if v := provider.Voices(p); len(v) > 0 {
+		return v
+	}
+	return geminispeech.PrebuiltVoices
 }

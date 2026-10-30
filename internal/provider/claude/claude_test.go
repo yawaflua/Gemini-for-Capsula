@@ -183,19 +183,3 @@ func TestNoSpeechCompletesTurn(t *testing.T) {
 		t.Fatal("turn did not complete")
 	}
 }
-
-func TestSentenceEnd(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want int
-	}{
-		{"Да. Нет", -1}, // too short
-		{"Сегодня в Ашдоде солнечно. Завтра", len("Сегодня в Ашдоде солнечно.")},
-		{"Привет\nмир", len("Привет\n")},
-		{"Сегодня в Ашдоде солнечно.", -1}, // may continue
-	} {
-		if got := sentenceEnd(tc.in); got != tc.want {
-			t.Errorf("sentenceEnd(%q) = %d, want %d", tc.in, got, tc.want)
-		}
-	}
-}

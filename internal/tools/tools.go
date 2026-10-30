@@ -209,3 +209,27 @@ func Lookup(name string) (Tool, bool) {
 	}
 	return Tool{}, false
 }
+
+// Schema returns the JSON Schema of the tool's parameters, as used by the
+// OpenAI function calling APIs.
+func (t Tool) Schema() map[string]any {
+	props := map[string]any{}
+	required := []string{}
+	for _, p := range t.Parameters {
+		s := map[string]any{"type": string(p.Type), "description": p.Description}
+		if len(p.Enum) > 0 {
+			s["enum"] = p.Enum
+		}
+		if p.Minimum != nil {
+			s["minimum"] = *p.Minimum
+		}
+		if p.Maximum != nil {
+			s["maximum"] = *p.Maximum
+		}
+		props[p.Name] = s
+		if p.Required {
+			required = append(required, p.Name)
+		}
+	}
+	return map[string]any{"type": "object", "properties": props, "required": required}
+}

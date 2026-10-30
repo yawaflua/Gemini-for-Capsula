@@ -23,6 +23,8 @@ services:
     environment:
       # Settings changed in the web panel survive restarts.
       MARUSYA_SETTINGS_FILE: /data/settings.json
+      # Model providers added in the web panel, with their API keys.
+      MARUSYA_PROVIDERS_FILE: /data/providers.json
       # Per-speaker region, languages and tokens (web panel, "Колонки").
       MARUSYA_PROFILES_FILE: /data/devices.json
       # Alarms and timers of the speakers.
