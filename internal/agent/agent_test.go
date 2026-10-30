@@ -103,7 +103,7 @@ func (w fakeWake) Run(ctx context.Context, _ <-chan []byte, out chan<- wakeword.
 }
 
 func TestAgentEndToEndWithEchoProvider(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewTextHandler(newTestWriter(t), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	srv := httptest.NewServer(server.New(server.Config{Provider: echo.Provider{}, AuthToken: "secret", Logger: log}))
 	defer srv.Close()
 
@@ -169,10 +169,31 @@ func (f *fakeIndicator) get() []indicator.State {
 	return slices.Clone(f.states)
 }
 
-type testWriter struct{ t *testing.T }
+// testWriter sends log lines to t.Log until the test ends. Server goroutines
+// may still log after that, and t.Log from them then races with the test
+// runner.
+type testWriter struct {
+	t    *testing.T
+	mu   sync.Mutex
+	done bool
+}
 
-func (w testWriter) Write(b []byte) (int, error) {
-	w.t.Log(strings.TrimSpace(string(b)))
+func newTestWriter(t *testing.T) *testWriter {
+	w := &testWriter{t: t}
+	t.Cleanup(func() {
+		w.mu.Lock()
+		w.done = true
+		w.mu.Unlock()
+	})
+	return w
+}
+
+func (w *testWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.done {
+		w.t.Log(strings.TrimSpace(string(b)))
+	}
 	return len(b), nil
 }
 
@@ -180,7 +201,7 @@ func (w testWriter) Write(b []byte) (int, error) {
 // panel is played although the speaker recorded nothing, and that the agent
 // does not start listening for a follow-up afterwards.
 func TestAgentRemoteTurn(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewTextHandler(newTestWriter(t), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -291,7 +312,7 @@ func fakeTurnServer(t *testing.T, ctx context.Context, caps chan<- []models.Acti
 // TestAgentConversationEnd checks that after "пока" the agent goes idle
 // instead of listening for a follow-up.
 func TestAgentConversationEnd(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewTextHandler(newTestWriter(t), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	caps := make(chan []models.Action, 1)
@@ -340,7 +361,7 @@ func TestAgentConversationEnd(t *testing.T) {
 // TestAgentCancelListeningByButton checks that pressing the button again
 // while listening abandons the request.
 func TestAgentCancelListeningByButton(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewTextHandler(newTestWriter(t), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	srv := httptest.NewServer(server.New(server.Config{Provider: echo.Provider{}, Logger: log}))
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -382,7 +403,7 @@ func TestAgentCancelListeningByButton(t *testing.T) {
 // TestAgentServerWake checks that the agent streams idle audio when asked
 // and starts listening when the server hears the wake word.
 func TestAgentServerWake(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewTextHandler(newTestWriter(t), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -446,7 +467,7 @@ func TestAgentServerWake(t *testing.T) {
 }
 
 func TestAgentAnnounceAndAnswer(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewTextHandler(newTestWriter(t), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
