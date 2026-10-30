@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/auth v0.9.3
 	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/coder/websocket v1.8.15
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/net v0.41.0
 	golang.org/x/oauth2 v0.30.0

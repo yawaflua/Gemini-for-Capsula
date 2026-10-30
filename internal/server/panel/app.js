@@ -14,6 +14,8 @@ const state = {
   deviceFilter: "",
   es: null,
   live: {},         // per session: {volume, muted, media, bt}
+  providers: null,  // /api/providers
+  editing: null,    // ID of the provider being edited, "" for a new one
 };
 
 // ---------- API ----------
@@ -88,6 +90,8 @@ const actionNames = {
   "bluetooth.disconnect": "Bluetooth: отключить", "bluetooth.devices": "Bluetooth: список",
   "light.night": "ночник", "conversation.end": "завершить разговор", "time_now": "время", "alarm_set": "будильник", "alarm_list": "будильники", "alarm_delete": "удалить будильник", "weather_forecast": "погода",
   "home_find": "умный дом: найти", "home_control": "умный дом",
+  "ring.set": "кольцо", "ring.reset": "кольцо как обычно", "display.show": "экран", "display.reset": "экран как обычно",
+  "sensors.get": "датчики", "ring_set": "кольцо",
 };
 
 function deviceName(sessionOrDevice) {
@@ -154,9 +158,12 @@ async function boot() {
   renderDevices();
   renderHistory();
   renderSettings();
+  await loadProviders().catch(() => {});
+  await loadPlugins().catch(() => {});
   connectEvents();
   let tab = "devices";
   try { tab = localStorage.getItem("marusya-tab") || tab; } catch { /* private mode */ }
+  if ($(`.tab[data-tab="${tab}"]`)?.hidden !== false) tab = "devices";
   selectTab(tab);
 }
 
@@ -192,7 +199,22 @@ function connectEvents() {
     prependEvent(ev);
     // Settings changed in another tab: reload them unless being edited here.
     if (ev.kind === "settings" && $("#tab-settings").hidden) refreshSettings();
+    if (ev.kind === "provider") { refreshInfo(); loadProviders().catch(() => {}); }
+    if (["plugins", "connect", "disconnect"].includes(ev.kind)) loadPlugins().catch(() => {});
   });
+}
+
+// refreshInfo reloads what depends on the provider: its name, model, voice.
+async function refreshInfo() {
+  try {
+    const st = await api("GET", "state");
+    delete st.devices;
+    delete st.history;
+    state.info = st;
+    document.body.classList.toggle("tunable", st.tunable);
+    renderServerLine();
+    renderSettings();
+  } catch { /* ignore */ }
 }
 
 async function refreshSettings() {
@@ -252,8 +274,9 @@ function renderDetail() {
     loadLive(d.session);
   }
   const caps = new Set(d.capabilities);
+  // data-cap lists actions; the element shows if the device has any of them.
   for (const c of $$("[data-cap]", box)) {
-    c.hidden = c.dataset.cap === "say" ? false : !caps.has(c.dataset.cap);
+    c.hidden = c.dataset.cap === "say" ? false : !c.dataset.cap.split(" ").some((a) => caps.has(a));
   }
   const prof = profileOf(d);
   f(box, "name").textContent = prof.name ? `${prof.name} · ${d.device_id}` : d.device_id || "колонка";
@@ -306,9 +329,53 @@ function renderDetail() {
   mute.classList.toggle("on", !!live.muted);
   f(box, "light-on").checked = !!live.light;
   if (live.media) {
-    f(box, "now").textContent = live.media.playing ? `▶ ${live.media.title || "играет"}` : "Ничего не играет";
+    const via = live.media.source === "airplay" ? " · AirPlay" : "";
+    f(box, "now").textContent = live.media.playing ? `▶ ${live.media.title || "играет"}${via}`
+      : live.media.source === "airplay" ? `⏸ ${live.media.title || "AirPlay на паузе"}${via}` : "Ничего не играет";
   }
   renderBT(box, d.session, live.bt);
+  renderSurface(box, live.surface);
+}
+
+const sceneNames = {
+  solid: "ровный цвет", breathe: "дыхание", spin: "бегущий огонь", pulse: "пульс", rainbow: "радуга", off: "погашено",
+  listening: "«слушаю»", thinking: "«думаю»", speaking: "«говорю»", announcing: "«объявляю»", error: "«ошибка»", disconnected: "«нет связи»",
+};
+const displayModeNames = { clock: "часы", off: "погашен", sleep: "спит", wake: "не засыпает", face: "лицо" };
+const keyNames = { voice: "центральная", next: "следующий трек", mic: "микрофон", volume_up: "громче", volume_down: "тише" };
+
+// left returns how long an override still lasts, e.g. "ещё 9 мин".
+function left(o) {
+  const s = Math.max(0, Math.round((Date.parse(o.until) - Date.now()) / 1000));
+  if (s < 60) return `ещё ${s} с`;
+  if (s < 3600) return `ещё ${Math.ceil(s / 60)} мин`;
+  return `ещё ${Math.floor(s / 3600)} ч ${Math.round((s % 3600) / 60)} мин`;
+}
+
+// renderSurface shows the ring and display overrides and the sensors.
+function renderSurface(box, s) {
+  if (!s) return;
+  const r = s.ring;
+  f(box, "ring-now").textContent = r
+    ? `Сейчас: ${sceneNames[r.scene] || r.scene}${r.color && ["solid", "breathe", "spin", "pulse"].includes(r.scene) ? " #" + r.color : ""}, ${left(r)}.`
+    : "Сейчас кольцо показывает, что делает Маруся.";
+  const dsp = s.display;
+  f(box, "disp-now").textContent = dsp
+    ? `Сейчас: ${dsp.mode === "text" ? `текст «${dsp.text}»` : displayModeNames[dsp.mode] || dsp.mode}${dsp.brightness ? `, яркость ${dsp.brightness}%` : ""}, ${left(dsp)}.`
+    : "Сейчас на экране лицо Маруси.";
+  const bri = f(box, "disp-bri");
+  if (document.activeElement !== bri) {
+    bri.value = dsp?.brightness || 0;
+    paintRange(bri);
+    f(box, "disp-bri-value").textContent = bri.value > 0 ? `${bri.value}%` : "по датчику";
+  }
+  f(box, "sf-asleep").textContent = s.has_display ? (s.asleep ? "лицо спит" : "") : "";
+  const facts = [["Состояние", stateName[s.state] || s.state]];
+  if (s.has_light) facts.push(["Освещённость", s.lux != null ? `${s.lux < 10 ? s.lux.toFixed(1) : Math.round(s.lux)} лк` : "—"]);
+  if (s.has_display) facts.push(["Лицо", s.asleep ? "спит" : "не спит"]);
+  facts.push(["Микрофон", s.mic_muted ? "выключен кнопкой" : "включён"]);
+  if (s.key) facts.push(["Последняя кнопка", `${keyNames[s.key] || s.key}, ${ago(s.key_at)}`]);
+  f(box, "sensors").replaceChildren(...facts.map(([k, v]) => el("div", {}, el("dt", { text: k }), el("dd", { text: v }))));
 }
 
 const f = (root, name) => root.querySelector(`[data-f="${name}"]`);
@@ -403,6 +470,7 @@ async function loadLive(session) {
   if (caps.has("media.status")) {
     jobs.push(command(session, "media.status").then((r) => { live.media = r.data; }));
   }
+  if (caps.has("sensors.get")) jobs.push(loadSurface(session));
   await Promise.allSettled(jobs);
   if (state.selected === session) renderDetail();
 }
@@ -508,6 +576,61 @@ function wireDetail(box, session) {
     lightSoon();
   });
 
+  // Ring and display: overrides that end by themselves after "Держать".
+  const hold = () => Number(f(box, "sf-hold").value);
+  const surfaceCmd = async (btn, action, args) => {
+    const r = await run(btn, () => command(session, action, args));
+    if (r) {
+      await loadSurface(session).catch(() => {});
+      renderDetail();
+    }
+    return r;
+  };
+  const ringArgs = () => ({
+    scene: f(box, "ring-scene").value,
+    color: f(box, "ring-color").value.replace("#", ""),
+    brightness: Number(f(box, "ring-bri").value),
+    seconds: hold(),
+  });
+  f(box, "ring-apply").addEventListener("click", (e) => surfaceCmd(e.target, "ring.set", ringArgs()));
+  f(box, "ring-reset").addEventListener("click", (e) => surfaceCmd(e.target, "ring.reset", {}));
+  // Like the night light, a new colour or brightness applies at once.
+  let ringTimer;
+  const ringSoon = () => {
+    clearTimeout(ringTimer);
+    ringTimer = setTimeout(() => surfaceCmd(null, "ring.set", ringArgs()), 250);
+  };
+  f(box, "ring-color").addEventListener("input", ringSoon);
+  f(box, "ring-scene").addEventListener("change", ringSoon);
+  f(box, "ring-bri").addEventListener("input", (e) => {
+    f(box, "ring-bri-value").textContent = e.target.value;
+    ringSoon();
+  });
+
+  const dispBri = () => Number(f(box, "disp-bri").value);
+  f(box, "disp-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = f(box, "disp-text").value.trim();
+    if (!text) return;
+    if (/[^\x20-\x7e]/.test(text)) {
+      toast("Экран показывает только латиницу, цифры и знаки", true);
+      return;
+    }
+    await surfaceCmd($("button", e.target), "display.show", { mode: "text", text, brightness: dispBri(), seconds: hold() });
+  });
+  for (const b of $$("[data-disp]", box)) {
+    b.addEventListener("click", () => surfaceCmd(b, "display.show", { mode: b.dataset.disp, brightness: dispBri(), seconds: hold() }));
+  }
+  f(box, "disp-reset").addEventListener("click", (e) => surfaceCmd(e.target, "display.reset", {}));
+  const bri = f(box, "disp-bri");
+  bri.addEventListener("input", () => (f(box, "disp-bri-value").textContent = bri.value > 0 ? `${bri.value}%` : "по датчику"));
+  // Brightness keeps what the display shows now (the face if nothing).
+  bri.addEventListener("change", () => {
+    const cur = live().surface?.display;
+    if (!cur && dispBri() === 0) return;
+    surfaceCmd(null, "display.show", { mode: cur?.mode || "face", text: cur?.text, brightness: dispBri(), seconds: hold() });
+  });
+
   for (const b of $$("[data-media]", box)) {
     b.addEventListener("click", async () => {
       await run(b, () => command(session, "media.control", { operation: b.dataset.media }));
@@ -531,6 +654,19 @@ function wireDetail(box, session) {
     setTimeout(() => loadLive(session), 1500);
   });
 }
+
+async function loadSurface(session) {
+  const r = await command(session, "sensors.get");
+  (state.live[session] ||= {}).surface = r.data;
+}
+
+// The sensors change on their own: refresh them while the device is shown.
+setInterval(async () => {
+  const d = state.devices.find((x) => x.session === state.selected);
+  if (!d || !d.capabilities.includes("sensors.get") || document.hidden || $("#tab-devices")?.hidden) return;
+  try { await loadSurface(d.session); } catch { return; }
+  if (state.selected === d.session) renderDetail();
+}, 5000);
 
 async function loadBT(session) {
   const r = await command(session, "bluetooth.devices");
@@ -640,6 +776,7 @@ function renderEvent(ev) {
         connect: "Колонка подключилась",
         disconnect: "Колонка отключилась",
         settings: "Настройки изменены",
+        provider: `Модель сменилась: ${ev.name || ""}`,
         error: ev.error || "Ошибка",
       }[ev.kind] || ev.kind;
       return el("li", { class: "ev compact" }, el("div", { class: "ev-meta" }, ...meta.childNodes, el("span", { text: "· " + text })));
@@ -729,6 +866,246 @@ resetBtn.addEventListener("click", async () => {
   const r = await run(resetBtn, () => api("DELETE", "settings"), "Настройки сброшены");
   if (r) { state.info.settings = r; renderSettings(); }
 });
+
+// ---------- providers ----------
+
+async function loadProviders() {
+  const p = await api("GET", "providers");
+  state.providers = p;
+  $("#providers-tab").hidden = !p.enabled;
+  if (p.enabled) renderProviders();
+}
+
+const kindOf = (k) => (state.providers.kinds || []).find((x) => x.kind === k);
+
+function renderProviders() {
+  const p = state.providers;
+  $("#providers-note").textContent = (p.saved
+    ? "Провайдеры и их ключи хранятся на сервере."
+    : "Провайдеры действуют до перезапуска сервера. Чтобы они сохранялись, задайте MARUSYA_PROVIDERS_FILE.") +
+    " Голосовые модели (Gemini Live, OpenAI Realtime) слушают и отвечают сами; текстовым нужны распознавание и синтез речи.";
+  const list = $("#prov-list");
+  list.replaceChildren();
+  for (const v of p.providers) {
+    const active = v.id === p.active;
+    const kind = v.read_only ? "задан в server.env" : (kindOf(v.kind)?.label || v.kind);
+    const details = v.read_only ? kind : [kind, v.model, v.base_url].filter(Boolean).join(" · ");
+    const actions = el("div", { class: "row" },
+      active ? el("span", { class: "badge idle", text: "используется" }) :
+        el("button", { class: "btn primary small", type: "button", text: "Использовать", onclick: (e) => activateProvider(e.target, v.id) }),
+      v.read_only ? null : el("button", { class: "btn text small", type: "button", text: "Изменить", onclick: () => editProvider(v) }),
+      v.read_only || active ? null : el("button", { class: "btn text small", type: "button", text: "Удалить", onclick: (e) => deleteProvider(e.target, v) }));
+    list.append(el("li", { class: "prov" + (active ? " active" : "") },
+      el("div", { class: "prov-main" }, el("b", { text: v.name }), el("small", { text: details }),
+        !v.read_only && !v.has_key ? el("small", { text: "без ключа" }) : null),
+      actions));
+  }
+}
+
+async function activateProvider(btn, id) {
+  const r = await run(btn, () => api("POST", `providers/${encodeURIComponent(id)}/activate`), "Модель переключена");
+  if (r) { state.providers = r; renderProviders(); refreshInfo(); }
+}
+
+// Two-step delete instead of confirm(), which may be blocked.
+async function deleteProvider(btn, v) {
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "Точно удалить?";
+    setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Удалить"; }, 4000);
+    return;
+  }
+  const r = await run(btn, () => api("DELETE", `providers/${encodeURIComponent(v.id)}`), "Провайдер удалён");
+  if (r) { state.providers = r; renderProviders(); }
+}
+
+function fillKinds() {
+  const sel = $("#prov-kind");
+  if (sel.children.length) return;
+  sel.append(...state.providers.kinds.map((k) => el("option", { value: k.kind, text: k.label })));
+}
+
+// updateProviderForm adapts the form to the chosen kind.
+function updateProviderForm() {
+  const k = kindOf($("#prov-kind").value);
+  if (!k) return;
+  $("#prov-url").placeholder = k.base_url;
+  $("#prov-model").placeholder = k.model;
+  $("#prov-speech-field").hidden = !k.pipeline;
+  const cur = $("#prov-speech").value;
+  const opts = [el("option", { value: "", text: "Gemini сервера (GEMINI_API_KEY)" })];
+  if (k.kind === "openai") opts.push(el("option", { value: "self", text: "Этот же API (/audio/transcriptions и /audio/speech)" }));
+  for (const v of state.providers.providers) {
+    if (v.read_only || v.id === state.editing || !["gemini", "openai", "openai-realtime"].includes(v.kind)) continue;
+    opts.push(el("option", { value: v.id, text: `Ключ провайдера «${v.name}»` }));
+  }
+  $("#prov-speech").replaceChildren(...opts);
+  $("#prov-speech").value = [...$("#prov-speech").options].some((o) => o.value === cur) ? cur : "";
+}
+
+function editProvider(v) {
+  fillKinds();
+  state.editing = v ? v.id : "";
+  $("#prov-form-title").textContent = v ? `Изменить «${v.name}»` : "Новый провайдер";
+  $("#prov-id").value = v ? v.id : "";
+  $("#prov-id").disabled = !!v;
+  $("#prov-name").value = v ? v.name : "";
+  $("#prov-kind").value = v ? v.kind : "openai";
+  $("#prov-url").value = v ? v.base_url || "" : "";
+  $("#prov-key").value = "";
+  $("#prov-key").placeholder = v && v.has_key ? "Сохранён — оставьте пустым, чтобы не менять" : "";
+  $("#prov-model").value = v ? v.model || "" : "";
+  $("#prov-voice").value = v ? v.voice || "" : "";
+  updateProviderForm();
+  $("#prov-speech").value = v ? v.speech || "" : "";
+  $("#prov-error").hidden = true;
+  $("#prov-form").hidden = false;
+  $("#prov-name").focus();
+}
+
+$("#prov-add").addEventListener("click", () => editProvider(null));
+$("#prov-cancel").addEventListener("click", () => { $("#prov-form").hidden = true; state.editing = null; });
+$("#prov-kind").addEventListener("change", updateProviderForm);
+
+$("#prov-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#prov-error");
+  err.hidden = true;
+  const id = $("#prov-id").value.trim().toLowerCase();
+  const body = {
+    name: $("#prov-name").value,
+    kind: $("#prov-kind").value,
+    base_url: $("#prov-url").value,
+    api_key: $("#prov-key").value,
+    model: $("#prov-model").value,
+    voice: $("#prov-voice").value,
+    speech: $("#prov-speech-field").hidden ? "" : $("#prov-speech").value,
+  };
+  const btn = $("button[type=submit]", e.target);
+  btn.disabled = true;
+  try {
+    state.providers = await api("PUT", `providers/${encodeURIComponent(id)}`, body);
+    renderProviders();
+    $("#prov-form").hidden = true;
+    state.editing = null;
+    toast("Провайдер сохранён");
+    if (state.providers.active === id) refreshInfo();
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------- plugins ----------
+
+const pluginStates = {
+  running: ["idle", "работает"],
+  starting: ["thinking", "запускается"],
+  failed: ["failed", "упал, перезапуск"],
+  disabled: ["off", "выключен"],
+  stopped: ["off", "остановлен"],
+};
+
+async function loadPlugins() {
+  const p = await api("GET", "plugins");
+  state.plugins = p;
+  // Do not redraw under an open configuration editor.
+  if (!$("#plugins-list .plugin-config")) renderPlugins();
+  renderDevicePlugins();
+}
+
+function renderPlugins() {
+  const p = state.plugins;
+  $("#plugins-note").textContent = p.enabled
+    ? `Каталог ${p.dir}: в нём по папке на плагин с файлом plugin.json. Плагины работают отдельными процессами и общаются с сервером по JSON-RPC (SDK для Go, C++ и Python).`
+    : "Плагины выключены. Чтобы включить, задайте каталог MARUSYA_PLUGINS_DIR (флаг -plugins_dir) и перезапустите сервер.";
+  $("#plugins-rescan").hidden = !p.enabled;
+  const errs = $("#plugins-errors");
+  errs.replaceChildren(...p.errors.map((e) => el("li", { text: e })));
+  errs.hidden = !p.errors.length;
+  const list = $("#plugins-list");
+  list.replaceChildren();
+  if (p.enabled && !p.plugins.length) list.append(el("li", { class: "muted", text: "Серверных плагинов пока нет." }));
+  for (const v of p.plugins) {
+    const [cls, label] = pluginStates[v.state] || ["off", v.state];
+    const sides = v.sides.map((s) => (s === "server" ? "сервер" : "колонка")).join(" + ");
+    const meta = [v.id, v.version && "v" + v.version, sides, v.restarts ? `перезапусков: ${v.restarts}` : ""].filter(Boolean).join(" · ");
+    const actions = el("div", { class: "row" },
+      el("span", { class: "badge " + cls, text: label }),
+      el("button", { class: "btn text small", type: "button", text: v.enabled ? "Выключить" : "Включить",
+        onclick: (e) => pluginAction(e.target, `plugins/${encodeURIComponent(v.id)}/enabled`, { enabled: !v.enabled }, v.enabled ? "Плагин выключен" : "Плагин включён") }),
+      v.enabled ? el("button", { class: "btn text small", type: "button", text: "Перезапустить",
+        onclick: (e) => pluginAction(e.target, `plugins/${encodeURIComponent(v.id)}/restart`, {}, "Плагин перезапущен") }) : null,
+      el("button", { class: "btn text small", type: "button", text: "Настройки", onclick: (e) => editPluginConfig(e.target.closest("li"), v) }));
+    list.append(el("li", { class: "prov plugin" },
+      el("div", { class: "prov-main" },
+        el("b", { text: v.name || v.id }),
+        el("small", { text: meta }),
+        v.description ? el("small", { text: v.description }) : null,
+        v.error ? el("small", { class: "error", text: v.error }) : null,
+        v.tools.length ? el("div", { class: "tools" }, ...v.tools.map((t) => el("code", { text: t }))) : null),
+      actions));
+  }
+}
+
+function renderDevicePlugins() {
+  const list = $("#plugins-devices");
+  list.replaceChildren();
+  const devs = state.plugins?.devices || [];
+  if (!devs.length) list.append(el("li", { class: "muted", text: "Нет подключённых колонок." }));
+  for (const d of devs) {
+    let body;
+    if (!d.plugins) body = el("small", { text: "агент без плагинов: каталог не задан или агент устарел" });
+    else if (!d.tools.length) body = el("small", { text: "плагины не объявили функций" });
+    else body = el("div", { class: "tools" }, ...d.tools.map((t) => el("code", { text: `${t.plugin}: ${t.name}`, title: t.description })));
+    list.append(el("li", { class: "prov plugin" }, el("div", { class: "prov-main" }, el("b", { text: d.device }), body)));
+  }
+}
+
+async function pluginAction(btn, path, body, okMsg) {
+  const r = await run(btn, () => api("POST", path, body), okMsg);
+  if (r) { state.plugins = r; renderPlugins(); renderDevicePlugins(); }
+}
+
+function editPluginConfig(li, v) {
+  if ($(".plugin-config", li)) return;
+  const area = el("textarea", { spellcheck: "false", rows: 6 });
+  area.value = v.config ? JSON.stringify(v.config, null, 2) : "{}";
+  const err = el("p", { class: "error", hidden: true });
+  const close = () => { box.remove(); renderPlugins(); };
+  const save = async (btn, value) => {
+    err.hidden = true;
+    let cfg = null;
+    if (value !== null) {
+      try { cfg = JSON.parse(value); } catch (ex) { err.textContent = "Неверный JSON: " + ex.message; err.hidden = false; return; }
+    }
+    btn.disabled = true;
+    try {
+      state.plugins = await api("PUT", `plugins/${encodeURIComponent(v.id)}/config`, cfg);
+      toast("Настройки сохранены, плагин перезапущен");
+      close();
+      renderDevicePlugins();
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  const box = el("div", { class: "plugin-config" },
+    el("small", { class: "muted", text: "Настройки передаются плагину при запуске (поле config). Сохраняются на сервере." }),
+    area, err,
+    el("div", { class: "row" },
+      el("button", { class: "btn primary small", type: "button", text: "Сохранить", onclick: (e) => save(e.target, area.value) }),
+      el("button", { class: "btn text small", type: "button", text: "Как в plugin.json", onclick: (e) => save(e.target, null) }),
+      el("button", { class: "btn text small", type: "button", text: "Отмена", onclick: close })));
+  li.append(box);
+  area.focus();
+}
+
+$("#plugins-rescan").addEventListener("click", (e) => pluginAction(e.target, "plugins/rescan", {}, "Каталог плагинов перечитан"));
 
 // Refresh relative times.
 setInterval(() => { if (!$("#app").hidden) renderDetail(); }, 30000);

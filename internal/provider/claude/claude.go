@@ -33,6 +33,7 @@ import (
 
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
+	"github.com/yawaflua/marusya-gemini/internal/provider/pipeline"
 	"github.com/yawaflua/marusya-gemini/internal/speech"
 	"github.com/yawaflua/marusya-gemini/internal/tools"
 )
@@ -143,6 +144,9 @@ func (p *Provider) Tune(t provider.Tuning) {
 	}
 }
 
+// Voices implements [provider.VoiceLister] with the synthesizer's voices.
+func (p *Provider) Voices() []string { return provider.Voices(p.cfg.Synthesizer) }
+
 // AcceptsText implements [provider.TextProvider].
 func (p *Provider) AcceptsText() bool { return true }
 
@@ -158,7 +162,13 @@ func (p *Provider) Connect(_ context.Context, opts provider.SessionOptions) (pro
 	if err := opts.InputFormat.Validate(); err != nil {
 		return nil, err
 	}
-	return newSession(p, opts), nil
+	return pipeline.New(pipeline.Config{
+		Recognizer:  p.cfg.Recognizer,
+		Synthesizer: p.cfg.Synthesizer,
+		Options:     opts,
+		Name:        "claude",
+		Logger:      p.log,
+	}, &conversation{p: p, params: p.params(opts)}), nil
 }
 
 // params builds the request parameters shared by every call of a session.

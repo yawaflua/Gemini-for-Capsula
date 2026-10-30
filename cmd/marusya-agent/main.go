@@ -37,15 +37,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/godbus/dbus/v5"
+
 	"github.com/yawaflua/marusya-gemini/internal/agent"
 	"github.com/yawaflua/marusya-gemini/internal/audio/alsa"
 	"github.com/yawaflua/marusya-gemini/internal/config"
 	"github.com/yawaflua/marusya-gemini/internal/controller"
+	"github.com/yawaflua/marusya-gemini/internal/controller/airplay"
 	"github.com/yawaflua/marusya-gemini/internal/controller/amixer"
 	"github.com/yawaflua/marusya-gemini/internal/controller/bluez"
 	"github.com/yawaflua/marusya-gemini/internal/controller/mpv"
 	"github.com/yawaflua/marusya-gemini/internal/controller/playerctl"
 	"github.com/yawaflua/marusya-gemini/internal/controller/stream"
+	"github.com/yawaflua/marusya-gemini/internal/dbusapi"
 	"github.com/yawaflua/marusya-gemini/internal/display/seg7"
 	"github.com/yawaflua/marusya-gemini/internal/evdev"
 	"github.com/yawaflua/marusya-gemini/internal/indicator"
@@ -55,12 +59,14 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/media"
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/sensor/light"
+	"github.com/yawaflua/marusya-gemini/internal/surface"
 	"github.com/yawaflua/marusya-gemini/internal/touchkeys"
 	"github.com/yawaflua/marusya-gemini/internal/vad"
 	"github.com/yawaflua/marusya-gemini/internal/wakeword"
 	wwbutton "github.com/yawaflua/marusya-gemini/internal/wakeword/button"
 	wwexec "github.com/yawaflua/marusya-gemini/internal/wakeword/exec"
 	wwsignal "github.com/yawaflua/marusya-gemini/internal/wakeword/signal"
+	"github.com/yawaflua/marusya-gemini/pkg/pluginsdk"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -97,15 +103,20 @@ var (
 	followUp      = flag.Bool("follow_up", true, "Listen for a follow-up question after each reply without the wake word.")
 	serverStreams = flag.Bool("server_streams", config.EnvBool("MARUSYA_SERVER_STREAMS", true), "Play YouTube and other http(s) streams decoded by the server (it needs yt-dlp and ffmpeg).")
 	duckMedia     = flag.Bool("duck_media", true, "Pause music while the assistant is active.")
+	pluginsDir    = flag.String("plugins_dir", config.Env("MARUSYA_PLUGINS_DIR", ""), "Directory of plugins that run on the speaker, one subdirectory with a plugin.json each (see pkg/pluginsdk). Empty disables plugins.")
+	airplayOn     = flag.Bool("airplay", config.EnvBool("MARUSYA_AIRPLAY", true), "Control AirPlay music played to the speaker (shairport-sync on the system D-Bus): pause, next track, status and ducking go to the phone while it plays.")
 
 	vadThreshold = flag.Float64("vad_threshold_db", vad.DefaultConfig().ThresholdDB, "Speech threshold above the noise floor, dB.")
 	vadSilence   = flag.Duration("vad_silence", vad.DefaultConfig().SilenceEnd, "Trailing silence that ends an utterance.")
 
 	displayMode = flag.String("display", config.Env("MARUSYA_DISPLAY", "auto"), `7-segment face display: "auto", "on" or empty to disable.`)
 	displayDev  = flag.String("display_dev", "", "line-display sysfs directory with map_seg7; auto-detected if empty.")
+	displayRot  = flag.Bool("display_rotate", config.EnvBool("MARUSYA_DISPLAY_ROTATE", false), "Turn the face upside down on panels driven by numbered segment LEDs (clock-led1..30), if it shows upside down.")
 	displayNose = flag.String("display_nose", "", `LED used as the nose (name under /sys/class/leds or "none"); auto-detected if empty.`)
 
 	lightSensor = flag.String("light_sensor", config.Env("MARUSYA_LIGHT_SENSOR", "auto"), `Ambient light sensor: "auto", an IIO device directory, or empty to disable. Dims the display and puts the face to sleep in the dark.`)
+
+	dbusService = flag.Bool("dbus", config.EnvBool("MARUSYA_DBUS", true), "Publish the LED ring, display and sensors on the system D-Bus as "+dbusapi.Name+" (needs deploy/agent/ru.marusya.Agent.conf).")
 
 	touchKeys      = flag.String("touch_keys", config.Env("MARUSYA_TOUCH_KEYS", "auto"), `Touch panel: "auto" (find "Hynitron CSK05T"), an evdev node, or empty to disable.`)
 	touchCenterKey = flag.Uint("touch_center_key", touchkeys.KeyVoice, "Key code of the centre key that activates the assistant.")
@@ -126,44 +137,37 @@ func main() {
 	}
 }
 
-// startLightSensor polls the ambient light sensor and feeds the face.
-func startLightSensor(ctx context.Context, f *face.Face, log *slog.Logger) error {
+// openLightSensor opens the ambient light sensor from -light_sensor. The
+// surface polls it, dims the face and puts it to sleep in the dark.
+func openLightSensor() (*light.Sensor, error) {
 	var s *light.Sensor
 	if *lightSensor == "auto" {
 		var err error
 		if s, err = light.Find(); err != nil {
-			return err
+			return nil, err
 		}
 	} else {
 		s = light.Open(*lightSensor)
 	}
 	if _, err := s.Lux(); err != nil {
-		return err
+		return nil, err
 	}
-	log.Info("ambient light sensor enabled", "sensor", s.Name(), "dir", s.Dir())
-	go func() {
-		t := time.NewTicker(2 * time.Second)
-		defer t.Stop()
-		failing := false
-		for {
-			lux, err := s.Lux()
-			switch {
-			case err == nil:
-				log.Debug("ambient light", "lux", lux)
-				f.SetAmbient(lux)
-				failing = false
-			case !failing:
-				log.Warn("ambient light sensor read failed", "err", err)
-				failing = true
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			}
-		}
-	}()
-	return nil
+	return s, nil
+}
+
+// serveDBus publishes the surface on the system bus until ctx is done.
+// The service is optional: without a bus or a policy the agent goes on.
+func serveDBus(ctx context.Context, s *surface.Surface, log *slog.Logger) {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		log.Info("D-Bus service disabled: no system bus", "err", err)
+		return
+	}
+	defer conn.Close()
+	svc := &dbusapi.Service{Surface: s, Version: version, Logger: log}
+	if err := svc.Serve(ctx, conn); err != nil {
+		log.Info("D-Bus service disabled; is /etc/dbus-1/system.d/ru.marusya.Agent.conf installed?", "err", err)
+	}
 }
 
 // newMedia picks the media controller according to -media.
@@ -238,7 +242,7 @@ func run() error {
 		display    *face.Face
 		ring       *ringled.Ring
 	)
-	if strip, desc := ringStrip(); strip != nil {
+	if strip, desc := ringStrip(log); strip != nil {
 		ring = ringled.New(strip, *ringledBrightness, log)
 		defer ring.Close()
 		indicators = append(indicators, ring)
@@ -255,6 +259,9 @@ func run() error {
 		panel, err := seg7.Open(*displayDev, *displayNose)
 		switch {
 		case err == nil:
+			if *displayRot {
+				panel.Rotate180()
+			}
 			display = face.New(panel, log)
 			indicators = append(indicators, display)
 			log.Info("face display enabled", "device", panel.Dir(), "dimmable", panel.Dimmable(), "layout_calibrated", panel.Calibrated())
@@ -263,6 +270,34 @@ func run() error {
 		default:
 			return err
 		}
+	}
+
+	// The surface lets the panel, D-Bus and the voice model take the ring
+	// and the display over for a while, and reports the sensors.
+	surf := &surface.Surface{Logger: log}
+	if ring != nil {
+		surf.Ring = ring
+		dispatcher.Ring = surf
+	}
+	if display != nil {
+		surf.Face = display
+		dispatcher.Display = surf
+	}
+	if *lightSensor != "" {
+		if s, err := openLightSensor(); err == nil {
+			surf.Light = s
+			log.Info("ambient light sensor enabled", "sensor", s.Name(), "dir", s.Dir())
+		} else {
+			log.Info("ambient light sensor disabled", "err", err)
+		}
+	}
+	if surf.Ring != nil || surf.Face != nil || surf.Light != nil {
+		dispatcher.Sensors = surf
+	}
+	indicators = append(indicators, surf)
+	go surf.Run(ctx)
+	if *dbusService {
+		go serveDBus(ctx, surf, log)
 	}
 
 	// Show every volume change on the display and the ring: the hardware keys did it
@@ -292,7 +327,7 @@ func run() error {
 			cfg.Device = *touchKeys
 		}
 		if _, err := evdev.FindByName(cfg.Name); cfg.Device != "" || err == nil {
-			touch = &touchkeys.Panel{Config: cfg, Dispatcher: dispatcher, Logger: log}
+			touch = &touchkeys.Panel{Config: cfg, Dispatcher: dispatcher, Logger: log, OnKey: surf.KeyEvent}
 			if display != nil {
 				touch.Display = display
 			}
@@ -329,10 +364,30 @@ func run() error {
 			log.Info("server streams (YouTube, radio)", "endpoint", ep)
 		}
 	}
+	if *airplayOn {
+		// Outermost: while a phone plays to the speaker, it owns the music.
+		dispatcher.Media = airplay.Wrap(dispatcher.Media, log)
+	}
 	vadCfg := vad.DefaultConfig()
 	vadCfg.ThresholdDB = *vadThreshold
 	vadCfg.SilenceEnd = *vadSilence
 
+	var plugins *speakerPlugins
+	if *pluginsDir != "" {
+		plugins = newSpeakerPlugins(*pluginsDir, pluginsdk.Device{ID: id, Language: *language, Location: *location, TimeZone: *timezone}, dispatcher, log)
+		indicators = append(indicators, plugins)
+	}
+	deps := agent.Deps{
+		Capture:    alsa.NewCapture(alsaCfg, models.DeviceInputFormat),
+		Player:     player,
+		Detector:   detectors,
+		Dispatcher: dispatcher,
+		Indicator:  indicators,
+		Logs:       fwd.Records(),
+	}
+	if plugins != nil {
+		deps.Plugins = plugins
+	}
 	a := agent.New(agent.Config{
 		DeviceID:  id,
 		ServerURL: *serverURL,
@@ -344,14 +399,11 @@ func run() error {
 		Earcons:   *earcons,
 		FollowUp:  *followUp,
 		DuckMedia: *duckMedia,
-	}, log, agent.Deps{
-		Capture:    alsa.NewCapture(alsaCfg, models.DeviceInputFormat),
-		Player:     player,
-		Detector:   detectors,
-		Dispatcher: dispatcher,
-		Indicator:  indicators,
-		Logs:       fwd.Records(),
-	})
+	}, log, deps)
+	if plugins != nil {
+		plugins.start(ctx, a)
+		log.Info("plugins", "dir", *pluginsDir, "tools", len(plugins.Tools()))
+	}
 	if streams != nil {
 		streams.Hold = a.Busy
 		defer streams.Stop()
@@ -359,6 +411,7 @@ func run() error {
 	if touch != nil {
 		touch.OnMicMute = func(muted bool) {
 			a.SetMicMuted(muted)
+			surf.SetMicMuted(muted)
 			if display != nil {
 				display.SetMuted(muted)
 			}
@@ -369,28 +422,32 @@ func run() error {
 	}
 	if display != nil {
 		defer display.Close()
-		if *lightSensor != "" {
-			if err := startLightSensor(ctx, display, log); err != nil {
-				log.Info("ambient light sensor disabled", "err", err)
-			}
-		}
 	}
 	log.Info("starting agent", "version", version, "device", id, "server", *serverURL, "capabilities", len(dispatcher.Capabilities()))
 	return a.Run(ctx)
 }
 
-// ringStrip returns the LED ring from the flags; nil disables the ring.
-func ringStrip() (ringled.Strip, string) {
+// ringStrip returns the LED ring from the flags; nil disables the ring. The
+// VK Capsula Mini's ring is a WS2812 chain on spidev; builds on the stock
+// kernel expose it as LED class devices instead.
+func ringStrip(log *slog.Logger) (ringled.Strip, string) {
 	switch *ringMode {
-	case "on":
-	case "auto":
-		if !ringled.Detect() {
-			return nil, ""
-		}
+	case "on", "auto":
 	default:
 		return nil, ""
 	}
-	return ringled.NewSPI(*ringDev), "spi " + *ringDev
+	if ringled.Detect() || (*ringMode == "on" && !ringled.LEDsAvailable()) {
+		return ringled.NewSPI(*ringDev), "spi " + *ringDev
+	}
+	if ringled.LEDsAvailable() {
+		strip, err := ringled.NewLEDs()
+		if err != nil {
+			log.Warn("LED ring unavailable", "err", err)
+			return nil, ""
+		}
+		return strip, "leds /sys/class/leds/top-led1..36"
+	}
+	return nil, ""
 }
 
 // playRingDemo shows every look of the ring once (-ring_demo).

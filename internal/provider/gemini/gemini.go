@@ -30,6 +30,7 @@ import (
 
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
+	"github.com/yawaflua/marusya-gemini/internal/speech/geminispeech"
 	"github.com/yawaflua/marusya-gemini/internal/tools"
 )
 
@@ -48,6 +49,9 @@ type Config struct {
 	// Project and Location are used with VertexAI.
 	Project  string
 	Location string
+	// BaseURL overrides the API endpoint, e.g. a Gemini compatible gateway.
+	// The Live API WebSocket is derived from it.
+	BaseURL string
 
 	// Model is the Live API model name. Defaults to [DefaultModel].
 	Model string
@@ -86,6 +90,9 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.VertexAI {
 		cc = &genai.ClientConfig{Backend: genai.BackendVertexAI, Project: cfg.Project, Location: cfg.Location}
 		cc.HTTPOptions.APIVersion = "v1beta1"
+	}
+	if cfg.BaseURL != "" {
+		cc.HTTPOptions.BaseURL = cfg.BaseURL
 	}
 	if cfg.Transport != nil {
 		if err := setTransport(ctx, cc, cfg.Transport); err != nil {
@@ -147,6 +154,9 @@ func (p *Provider) Tune(t provider.Tuning) {
 		p.voice = t.Voice
 	}
 }
+
+// Voices implements [provider.VoiceLister].
+func (p *Provider) Voices() []string { return geminispeech.PrebuiltVoices }
 
 // SupportsServerVAD implements [provider.VADDetector].
 func (p *Provider) SupportsServerVAD() bool { return true }
@@ -262,6 +272,8 @@ func schemaType(t tools.Type) genai.Type {
 		return genai.TypeInteger
 	case tools.TypeBoolean:
 		return genai.TypeBoolean
+	case tools.TypeNumber:
+		return genai.TypeNumber
 	default:
 		return genai.TypeString
 	}

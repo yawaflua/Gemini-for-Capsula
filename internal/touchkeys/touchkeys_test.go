@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -85,7 +86,11 @@ func TestPanel(t *testing.T) {
 	vol := &fakeVolume{level: 50}
 	bt := &fakeBT{paired: make(chan struct{})}
 	ov := &overlays{}
-	var muted atomic.Bool
+	var (
+		muted  atomic.Bool
+		keysMu sync.Mutex
+		keys   []string
+	)
 	cfg := DefaultConfig()
 	cfg.Device = fifo
 	cfg.LongPress = 100 * time.Millisecond
@@ -94,6 +99,13 @@ func TestPanel(t *testing.T) {
 		Dispatcher: &controller.Dispatcher{Volume: vol, Bluetooth: bt},
 		Display:    ov,
 		OnMicMute:  func(m bool) { muted.Store(m) },
+		OnKey: func(name string, _ uint16, pressed bool) {
+			if pressed {
+				keysMu.Lock()
+				keys = append(keys, name)
+				keysMu.Unlock()
+			}
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,6 +159,11 @@ func TestPanel(t *testing.T) {
 	if len(out) != 0 {
 		t.Error("long press must not activate the assistant")
 	}
+	keysMu.Lock()
+	if want := []string{"voice", "voice", "volume_up", "mic"}; !slices.Equal(keys, want) {
+		t.Errorf("OnKey presses = %v, want %v", keys, want)
+	}
+	keysMu.Unlock()
 	ov.mu.Lock()
 	defer ov.mu.Unlock()
 	// Muting shows no text: the ring and the face show it.

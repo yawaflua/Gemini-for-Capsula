@@ -83,6 +83,24 @@ func DefaultConfig() Config {
 	}
 }
 
+// KeyName returns the name of a key of the panel: "voice", "next", "mic",
+// "volume_up", "volume_down", or "key_<code>" for any other key.
+func (c Config) KeyName(code uint16) string {
+	switch code {
+	case c.CenterKey:
+		return "voice"
+	case c.NextKey:
+		return "next"
+	case c.MicKey:
+		return "mic"
+	case c.VolumeUpKey:
+		return "volume_up"
+	case c.VolumeDownKey:
+		return "volume_down"
+	}
+	return "key_" + strconv.Itoa(int(code))
+}
+
 // Overlayer shows short feedback, e.g. the volume level.
 type Overlayer interface {
 	Overlay(text string, hold time.Duration)
@@ -100,7 +118,10 @@ type Panel struct {
 	Display Overlayer
 	// OnMicMute is called when the microphone is muted or unmuted.
 	OnMicMute func(muted bool)
-	Logger    *slog.Logger
+	// OnKey, if set, is called for every press and release with the key
+	// name (see [Config.KeyName]), before the key's own action.
+	OnKey  func(name string, code uint16, pressed bool)
+	Logger *slog.Logger
 
 	muted bool
 }
@@ -168,6 +189,9 @@ func (p *Panel) Run(ctx context.Context, _ <-chan []byte, out chan<- wakeword.De
 				continue // the kernel's repeat is replaced by ours
 			}
 			pressed := ev.Value == evdev.KeyPress
+			if p.OnKey != nil {
+				p.OnKey(p.Config.KeyName(ev.Code), ev.Code, pressed)
+			}
 			switch ev.Code {
 			case p.Config.VolumeUpKey, p.Config.VolumeDownKey:
 				stopRepeat()

@@ -15,12 +15,15 @@
 package face
 
 import (
+	"errors"
 	"log/slog"
 	"math"
 	"math/rand"
+	"sync/atomic"
 	"time"
 
 	"github.com/yawaflua/marusya-gemini/internal/indicator"
+	"github.com/yawaflua/marusya-gemini/internal/models"
 )
 
 // Renderer is the display the face is drawn on; see seg7.Panel.
@@ -57,6 +60,17 @@ type msg struct {
 	text    string
 	hold    time.Duration
 	overlay bool
+	// setManual replaces the manual override with manual (nil resets).
+	setManual bool
+	manual    *override
+}
+
+// override is a manual display mode set with [Face.Override].
+type override struct {
+	mode       string
+	text       string
+	brightness int
+	until      time.Time
 }
 
 // Face animates the assistant state. It also shows short text overlays such
@@ -71,7 +85,12 @@ type Face struct {
 	dark       bool
 	brightness int
 	ov         *msg
+	manual     *override
+	lux        float64
+	luxSeen    bool
+	asleep     atomic.Bool
 
+	now       func() time.Time
 	errorHold time.Duration
 	quit      chan struct{}
 	done      chan struct{}
@@ -87,7 +106,7 @@ func newFace(r Renderer, log *slog.Logger, hold time.Duration) *Face {
 		log = slog.Default()
 	}
 	f := &Face{r: r, log: log, rnd: rand.New(rand.NewSource(time.Now().UnixNano())),
-		ch: make(chan msg, 64), errorHold: hold, quit: make(chan struct{}), done: make(chan struct{})}
+		ch: make(chan msg, 64), errorHold: hold, now: time.Now, quit: make(chan struct{}), done: make(chan struct{})}
 	go f.loop()
 	return f
 }
@@ -115,8 +134,34 @@ func (f *Face) Overlay(text string, hold time.Duration) {
 	f.post(msg{overlay: true, text: text, hold: hold})
 }
 
+// ErrNotDimmable is returned for a brightness on a display that has none.
+var ErrNotDimmable = errors.New("the display brightness is not adjustable")
+
+// Override puts the display in a manual mode (see [models.DisplayModes])
+// until req.Hold passes or [Face.ResetOverride] is called. The assistant
+// states still show on top of it. It returns when the override ends.
+func (f *Face) Override(req models.DisplayRequest) (time.Time, error) {
+	if err := req.Normalize(); err != nil {
+		return time.Time{}, err
+	}
+	if _, ok := f.r.(Dimmer); req.Brightness > 0 && !ok {
+		return time.Time{}, ErrNotDimmable
+	}
+	until := time.Now().Add(req.Hold)
+	f.post(msg{setManual: true, manual: &override{mode: req.Mode, text: req.Text, brightness: req.Brightness, until: until}})
+	return until, nil
+}
+
+// ResetOverride returns the display to the automatic face.
+func (f *Face) ResetOverride() { f.post(msg{setManual: true}) }
+
+// Asleep tells whether the face is sleeping: in the dark or by an override.
+func (f *Face) Asleep() bool { return f.asleep.Load() }
+
 func (f *Face) apply(m msg) {
 	switch {
+	case m.setManual:
+		f.setManual(m.manual)
 	case m.state != nil:
 		f.state = *m.state
 	case m.muted != nil:
@@ -128,7 +173,41 @@ func (f *Face) apply(m msg) {
 	}
 }
 
+// setManual replaces the override and applies or restores its brightness.
+func (f *Face) setManual(o *override) {
+	had := f.manual != nil && f.manual.brightness > 0
+	f.manual = o
+	d, ok := f.r.(Dimmer)
+	switch {
+	case !ok:
+	case o != nil && o.brightness > 0:
+		if err := d.SetBrightness(o.brightness); err != nil {
+			f.log.Warn("face: set brightness", "err", err)
+		}
+	case had:
+		// Back to the light sensor, or full brightness without one.
+		pct := 100
+		if f.luxSeen {
+			pct = BrightnessFor(f.lux)
+		}
+		if err := d.SetBrightness(pct); err != nil {
+			f.log.Warn("face: restore brightness", "err", err)
+		}
+		if f.brightness >= 0 {
+			f.brightness = pct
+		}
+	}
+}
+
+// expire drops an override whose time is up.
+func (f *Face) expire() {
+	if f.manual != nil && !f.now().Before(f.manual.until) {
+		f.setManual(nil)
+	}
+}
+
 func (f *Face) ambient(lux float64) {
+	f.lux, f.luxSeen = lux, true
 	was := f.dark
 	switch {
 	case lux < darkBelow:
@@ -140,7 +219,7 @@ func (f *Face) ambient(lux float64) {
 		f.log.Info("face: ambient light changed", "lux", lux, "asleep", f.dark)
 	}
 	d, ok := f.r.(Dimmer)
-	if !ok || f.brightness < 0 {
+	if !ok || f.brightness < 0 || (f.manual != nil && f.manual.brightness > 0) {
 		return
 	}
 	pct := BrightnessFor(lux)
@@ -180,7 +259,17 @@ func (f *Face) sequence() ([]Frame, bool) {
 	}
 	// In the dark the face sleeps whether or not the microphone is muted
 	// (the ring shows the mute state).
-	if f.dark {
+	dark := f.dark
+	if f.manual != nil {
+		switch f.manual.mode {
+		case "sleep":
+			dark = true
+		case "wake":
+			dark = false
+		}
+	}
+	f.asleep.Store(dark)
+	if dark {
 		return loopSleeping, true
 	}
 	if f.muted {
@@ -214,11 +303,21 @@ func (f *Face) Close() {
 }
 
 // wait sleeps for d unless an update arrives first.
+// wait waits for d or a message. It also ends when the override expires,
+// so that the loop drops it.
 func (f *Face) wait(d time.Duration) (msg, bool) {
+	expiring := false
+	if f.manual != nil {
+		if u := f.manual.until.Sub(f.now()); u < d {
+			d, expiring = max(u, 0), true
+		}
+	}
 	t := time.NewTimer(d)
 	defer t.Stop()
 	for {
 		select {
+		case <-t.C:
+			return msg{}, expiring
 		case m := <-f.ch:
 			if m.lux == nil {
 				return m, true
@@ -233,10 +332,41 @@ func (f *Face) wait(d time.Duration) (msg, bool) {
 			continue
 		case <-f.quit:
 			return msg{}, true // the loop checks quit
-		case <-t.C:
-			return msg{}, false
 		}
 	}
+}
+
+// showManual renders a text, clock or blank override while the assistant
+// is idle. It reports false if the override leaves the face to the loop.
+func (f *Face) showManual() bool {
+	o := f.manual
+	if o == nil || f.state != indicator.Idle {
+		return false
+	}
+	var (
+		err  error
+		hold = o.until.Sub(f.now())
+	)
+	switch o.mode {
+	case "text":
+		err = f.r.Text(o.text)
+	case "clock":
+		now := f.now()
+		err = f.r.Text(now.Format("1504"))
+		hold = min(hold, now.Truncate(time.Minute).Add(time.Minute).Sub(now))
+	case "off":
+		err = f.r.Show([4]byte{}, false)
+	default:
+		return false
+	}
+	f.asleep.Store(false)
+	if err != nil {
+		f.log.Warn("face: render override", "err", err)
+	}
+	if m, hit := f.wait(hold); hit {
+		f.apply(m)
+	}
+	return true
 }
 
 // play renders seq once; it stops early and returns the update that
@@ -261,6 +391,7 @@ func (f *Face) loop() {
 			return
 		default:
 		}
+		f.expire()
 		if f.ov != nil {
 			o := *f.ov
 			f.ov = nil
@@ -270,6 +401,9 @@ func (f *Face) loop() {
 			if m, hit := f.wait(o.hold); hit {
 				f.apply(m)
 			}
+			continue
+		}
+		if f.showManual() {
 			continue
 		}
 		seq, repeat := f.sequence()

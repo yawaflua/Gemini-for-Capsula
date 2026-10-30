@@ -120,7 +120,8 @@ func (h *hub) devicesChanged() {
 func (h *hub) history() []Event {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return slices.Clone(h.buf)
+	// Never nil: the panel expects a JSON array, also before the first event.
+	return append([]Event{}, h.buf...)
 }
 
 func (h *hub) subscribe() *subscriber {

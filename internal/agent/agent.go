@@ -99,6 +99,8 @@ type Deps struct {
 	// Logs are device log records to forward to the server; optional
 	// (see logging.Forwarder).
 	Logs <-chan models.Log
+	// Plugins run on the speaker; optional.
+	Plugins Plugins
 }
 
 // Agent is the device-side assistant.
@@ -111,6 +113,8 @@ type Agent struct {
 	dispatcher *controller.Dispatcher
 	indicator  indicator.Indicator
 	logs       <-chan models.Log
+	plugins    Plugins
+	conn       atomic.Pointer[transport.Conn] // the current connection
 
 	frames chan []byte
 	wakes  chan wakeword.Detection
@@ -154,6 +158,7 @@ func New(cfg Config, log *slog.Logger, deps Deps) *Agent {
 		dispatcher: deps.Dispatcher,
 		indicator:  deps.Indicator,
 		logs:       deps.Logs,
+		plugins:    deps.Plugins,
 		frames:     make(chan []byte, 64),
 		wakes:      make(chan wakeword.Detection, 4),
 		mutes:      make(chan bool, 4),
@@ -273,6 +278,8 @@ func (a *Agent) serve(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close("agent shutdown")
+	a.conn.Store(conn)
+	defer a.conn.CompareAndSwap(conn, nil)
 
 	ready, err := a.handshake(ctx, conn)
 	if err != nil {
@@ -299,7 +306,8 @@ func (a *Agent) handshake(ctx context.Context, conn *transport.Conn) (*models.Re
 			Language:        a.cfg.Language,
 			Location:        a.cfg.Location,
 			TimeZone:        a.cfg.TimeZone,
-			Features:        []models.Feature{models.FeatureRemoteTurn, models.FeatureServerWake, models.FeatureAnnounce, models.FeatureAlarms},
+			Features:        a.features(),
+			PluginTools:     a.pluginTools(),
 		},
 	})
 	if err != nil {

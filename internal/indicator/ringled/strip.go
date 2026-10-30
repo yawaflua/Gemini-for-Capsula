@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -152,4 +153,85 @@ func rebindSPI(dev string) error {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// ledPrefix names the ring LEDs of builds that drive the ring with an
+// is31fl32xx LED controller instead of a WS2812 chain on SPI (the stock 4.9
+// kernel): top-led1..top-led36, three per pixel in R, G, B order.
+const ledPrefix = "top-led"
+
+// ledsRoot is the LED class directory (a variable for tests).
+var ledsRoot = "/sys/class/leds"
+
+// LEDsAvailable reports whether [NewLEDs] can drive the ring.
+func LEDsAvailable() bool {
+	for i := 1; i <= Pixels*3; i++ {
+		if _, err := os.Stat(filepath.Join(ledsRoot, ledPrefix+strconv.Itoa(i), "brightness")); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// ledStrip writes frames to the brightness of LED class devices, only the
+// channels that changed: every write is an I²C transfer.
+type ledStrip struct {
+	files [Pixels][3]*os.File
+	max   int
+	last  [Pixels][3]int
+}
+
+// NewLEDs returns a strip on the LED class devices top-led1..top-led36.
+func NewLEDs() (Strip, error) {
+	s := &ledStrip{max: 255}
+	for i := range Pixels {
+		for c := range 3 {
+			dir := filepath.Join(ledsRoot, ledPrefix+strconv.Itoa(i*3+c+1))
+			os.WriteFile(filepath.Join(dir, "trigger"), []byte("none"), 0)
+			f, err := os.OpenFile(filepath.Join(dir, "brightness"), os.O_WRONLY, 0)
+			if err != nil {
+				s.close()
+				return nil, err
+			}
+			s.files[i][c] = f
+			s.last[i][c] = -1
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(ledsRoot, ledPrefix+"1", "max_brightness")); err == nil {
+		if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && v > 0 {
+			s.max = v
+		}
+	}
+	return s, nil
+}
+
+func (s *ledStrip) close() {
+	for i := range s.files {
+		for _, f := range s.files[i] {
+			if f != nil {
+				f.Close()
+			}
+		}
+	}
+}
+
+func (s *ledStrip) Write(f Frame) error {
+	var first error
+	for i, px := range f {
+		for c, v := range [3]uint8{px.R, px.G, px.B} {
+			level := int(v) * s.max / 255
+			if level == s.last[i][c] {
+				continue
+			}
+			if _, err := s.files[i][c].WriteAt([]byte(strconv.Itoa(level)), 0); err != nil {
+				s.last[i][c] = -1
+				if first == nil {
+					first = fmt.Errorf("ring LED %d: %w", i*3+c+1, err)
+				}
+				continue
+			}
+			s.last[i][c] = level
+		}
+	}
+	return first
 }

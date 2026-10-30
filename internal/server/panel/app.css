@@ -417,3 +417,27 @@ body:not(.tunable) .tunable { display: none; }
   #live-text { display: none; }
   .live { padding: 0 11px; }
 }
+
+/* providers */
+.prov-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.prov { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; border-radius: 12px; background: var(--md-surface-container, rgba(127,127,127,.08)); }
+.prov.active { outline: 2px solid var(--md-primary, currentColor); }
+.prov-main { flex: 1 1 240px; min-width: 0; }
+.prov-main b { display: block; overflow-wrap: anywhere; }
+.prov-main small { display: block; opacity: .75; overflow-wrap: anywhere; }
+.prov .row { margin-top: 0; }
+
+/* Ring and display */
+.surface h4 { font-size: 14px; line-height: 20px; font-weight: 500; letter-spacing: 0.1px; margin: 0; }
+.surface-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px 24px; }
+.surface-range { margin-top: 12px; }
+.surface select { width: auto; }
+.surface .facts { border-top: 1px solid var(--md-outline-variant); padding-top: 16px; }
+
+.plugin-errors { margin: 8px 0 0; padding-left: 20px; }
+.plugin .tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.plugin .tools code { font-size: 12px; }
+.plugin-config { flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px; }
+.plugin-config textarea { font: 13px/20px "Roboto Mono", ui-monospace, Menlo, monospace; min-height: 120px; }
+.badge.failed { background: var(--md-error-container, rgba(220,50,50,.15)); color: var(--md-error); }
+.badge.off { background: var(--md-surface-container-highest); color: var(--md-on-surface-variant); }

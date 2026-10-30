@@ -33,7 +33,9 @@ import (
 
 	"github.com/yawaflua/marusya-gemini/internal/alarms"
 	"github.com/yawaflua/marusya-gemini/internal/media"
+	"github.com/yawaflua/marusya-gemini/internal/plugin"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
+	"github.com/yawaflua/marusya-gemini/internal/provider/registry"
 	"github.com/yawaflua/marusya-gemini/internal/skills"
 	"github.com/yawaflua/marusya-gemini/internal/skills/alarm"
 	"github.com/yawaflua/marusya-gemini/internal/speech"
@@ -109,6 +111,16 @@ type Config struct {
 	// AlarmsFile keeps the alarms and timers of the speakers; empty keeps
 	// them in memory only.
 	AlarmsFile string
+	// Providers are the model providers configured in the web panel. If
+	// set, Provider defaults to Providers.Provider(); nil leaves the
+	// provider to the configuration.
+	Providers *registry.Registry
+	// ProvidersFile is where Providers are kept, shown in the panel.
+	ProvidersFile string
+	// PluginsDir holds the server plugins, one directory each with a
+	// plugin.json (see pkg/pluginsdk); empty disables plugins. Call
+	// [Server.StartPlugins] to run them.
+	PluginsDir string
 	// Version is shown in the web panel.
 	Version string
 	// Logger receives structured logs.
@@ -116,6 +128,9 @@ type Config struct {
 }
 
 func (c *Config) setDefaults() {
+	if c.Provider == nil && c.Providers != nil {
+		c.Provider = c.Providers.Provider()
+	}
 	if c.SystemInstruction == "" {
 		c.SystemInstruction = DefaultSystemInstruction
 	}
@@ -149,6 +164,10 @@ type Server struct {
 
 	pmu      sync.RWMutex
 	profiles map[string]Profile // by device ID
+
+	plugins     *plugin.Manager // nil without PluginsDir
+	plmu        sync.Mutex
+	pluginTools string // names of the plugin tools, see pluginsChanged
 }
 
 // New creates a server.
@@ -178,6 +197,7 @@ func New(cfg Config) *Server {
 	s.alarms = store
 	store.OnChange = s.alarmsChanged
 	s.cfg.Skills = append(slices.Clone(cfg.Skills), alarm.Skills(store)...)
+	s.plugins = s.newPlugins()
 	s.defaults = cfg.defaultSettings()
 	s.settings = s.defaults
 	if cfg.SettingsFile != "" {
@@ -186,7 +206,7 @@ func New(cfg Config) *Server {
 			cfg.Logger.Error("load settings; using defaults", "err", err)
 		}
 		s.settings = applyOverrides(s.defaults, o)
-		if t, ok := cfg.Provider.(provider.Tuner); ok {
+		if t, ok := provider.AsTuner(cfg.Provider); ok {
 			t.Tune(provider.Tuning{Model: s.settings.Model, Voice: s.settings.Voice})
 		}
 	}

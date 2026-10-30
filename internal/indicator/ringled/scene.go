@@ -16,6 +16,7 @@ package ringled
 
 import (
 	"math"
+	"strings"
 	"time"
 )
 
@@ -77,6 +78,9 @@ func frac(t, d time.Duration) float64 { return min(max(float64(t)/float64(d), 0)
 
 // base is the scene of a look once any transition is over.
 func base(l look) scene {
+	if scene, ok := strings.CutPrefix(l.kind, "manual:"); ok {
+		return manual(scene, l)
+	}
 	switch l.kind {
 	case "off":
 		return steady(fcol{})
@@ -121,6 +125,68 @@ func base(l look) scene {
 }
 
 // spinner is a comet running round the ring, over a faint glow.
+// manual returns the scene of an override (see [Ring.Override]).
+func manual(name string, l look) scene {
+	switch name {
+	case "solid":
+		return steady(scaled(l.color, l.bright, 1))
+	case "breathe":
+		const period = 3 * time.Second
+		return sceneFunc(func(t time.Duration) (colors, bool) {
+			ph := 2 * math.Pi * float64(t%period) / float64(period)
+			return fill(scaled(l.color, l.bright, 0.15+0.85*(0.5-0.5*math.Cos(ph)))), true
+		})
+	case "spin":
+		return spinner(l.color, l.bright, 1500*time.Millisecond)
+	case "pulse":
+		// A heartbeat: two quick beats, then a pause.
+		const period = 1200 * time.Millisecond
+		return sceneFunc(func(t time.Duration) (colors, bool) {
+			x := float64(t%period) / float64(period)
+			k := 0.1
+			for _, at := range []float64{0.1, 0.32} {
+				if d := math.Abs(x - at); d < 0.1 {
+					k = max(k, 1-d*10)
+				}
+			}
+			return fill(scaled(l.color, l.bright, k)), true
+		})
+	case "rainbow":
+		const period = 4 * time.Second
+		return sceneFunc(func(t time.Duration) (colors, bool) {
+			var out colors
+			shift := float64(t%period) / float64(period)
+			for i := range out {
+				out[i] = scaled(hue(shift+float64(i)/Pixels), l.bright, 1)
+			}
+			return out, true
+		})
+	case "off":
+		return steady(fcol{})
+	}
+	// The assistant's own looks.
+	return base(look{kind: name, bright: l.bright})
+}
+
+// hue returns the fully saturated colour at h turns around the colour wheel.
+func hue(h float64) RGB {
+	h = math.Mod(h, 1) * 6
+	x := uint8(math.Round(255 * (1 - math.Abs(math.Mod(h, 2)-1))))
+	switch int(h) {
+	case 0:
+		return RGB{255, x, 0}
+	case 1:
+		return RGB{x, 255, 0}
+	case 2:
+		return RGB{0, 255, x}
+	case 3:
+		return RGB{0, x, 255}
+	case 4:
+		return RGB{x, 0, 255}
+	}
+	return RGB{255, 0, x}
+}
+
 func spinner(c RGB, bright int, period time.Duration) scene {
 	const tail = 5.0
 	return sceneFunc(func(t time.Duration) (colors, bool) {

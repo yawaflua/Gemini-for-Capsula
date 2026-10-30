@@ -18,9 +18,7 @@
 package geminispeech
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,6 +27,7 @@ import (
 
 	"google.golang.org/genai"
 
+	"github.com/yawaflua/marusya-gemini/internal/audio"
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/speech"
 )
@@ -43,6 +42,8 @@ const (
 type Config struct {
 	// APIKey for the Gemini Developer API; empty uses $GEMINI_API_KEY.
 	APIKey string
+	// BaseURL overrides the API endpoint, e.g. a Gemini compatible gateway.
+	BaseURL string
 	// STTModel and TTSModel default to [DefaultSTTModel] and [DefaultTTSModel].
 	STTModel string
 	TTSModel string
@@ -76,6 +77,7 @@ func New(ctx context.Context, cfg Config) (*Speech, error) {
 		cfg.TTSModel = DefaultTTSModel
 	}
 	cc := &genai.ClientConfig{APIKey: cfg.APIKey, Backend: genai.BackendGeminiAPI}
+	cc.HTTPOptions.BaseURL = cfg.BaseURL
 	if cfg.Transport != nil {
 		cc.HTTPClient = &http.Client{Transport: cfg.Transport}
 	}
@@ -100,6 +102,18 @@ func (s *Speech) SetVoice(v string) {
 	s.mu.Unlock()
 }
 
+// PrebuiltVoices are the prebuilt voices of the Gemini TTS and Live models.
+var PrebuiltVoices = []string{
+	"Kore", "Puck", "Charon", "Aoede", "Fenrir", "Leda", "Orus", "Zephyr",
+	"Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
+	"Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
+	"Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi",
+	"Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+}
+
+// Voices implements provider.VoiceLister.
+func (s *Speech) Voices() []string { return PrebuiltVoices }
+
 // noSpeech is what the recognizer is told to answer for silence or noise.
 const noSpeech = "<none>"
 
@@ -112,7 +126,7 @@ func (s *Speech) Transcribe(ctx context.Context, pcm []byte, f models.AudioForma
 		Role: genai.RoleUser,
 		Parts: []*genai.Part{
 			{Text: prompt},
-			{InlineData: &genai.Blob{MIMEType: "audio/wav", Data: WAV(pcm, f)}},
+			{InlineData: &genai.Blob{MIMEType: "audio/wav", Data: audio.WAV(pcm, f)}},
 		},
 	}}, &genai.GenerateContentConfig{
 		Temperature:    genai.Ptr[float32](0),
@@ -162,25 +176,4 @@ func (s *Speech) Synthesize(ctx context.Context, text, language string) ([]byte,
 		return nil, errors.New("geminispeech: no audio in response")
 	}
 	return out, nil
-}
-
-// WAV wraps LINEAR16 PCM in a RIFF/WAVE header.
-func WAV(pcm []byte, f models.AudioFormat) []byte {
-	var b bytes.Buffer
-	ch, rate := uint16(f.Channels), uint32(f.SampleRateHertz)
-	w := func(v any) { binary.Write(&b, binary.LittleEndian, v) }
-	b.WriteString("RIFF")
-	w(uint32(36 + len(pcm)))
-	b.WriteString("WAVEfmt ")
-	w(uint32(16))
-	w(uint16(1)) // PCM
-	w(ch)
-	w(rate)
-	w(rate * uint32(ch) * 2)
-	w(ch * 2)
-	w(uint16(16))
-	b.WriteString("data")
-	w(uint32(len(pcm)))
-	b.Write(pcm)
-	return b.Bytes()
 }

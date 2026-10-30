@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Command marusya-server accepts audio streams from speakers and relays them
-// to the Gemini Live API.
+// to a voice model: Gemini Live, OpenAI Realtime, or a text model (Claude,
+// an OpenAI compatible chat) with speech recognition and synthesis.
 //
 // Usage:
 //
@@ -48,6 +49,9 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/provider/claude"
 	"github.com/yawaflua/marusya-gemini/internal/provider/echo"
 	"github.com/yawaflua/marusya-gemini/internal/provider/gemini"
+	"github.com/yawaflua/marusya-gemini/internal/provider/openaichat"
+	"github.com/yawaflua/marusya-gemini/internal/provider/openairt"
+	"github.com/yawaflua/marusya-gemini/internal/provider/registry"
 	"github.com/yawaflua/marusya-gemini/internal/server"
 	"github.com/yawaflua/marusya-gemini/internal/skills"
 	"github.com/yawaflua/marusya-gemini/internal/skills/clock"
@@ -55,6 +59,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/skills/spotify"
 	"github.com/yawaflua/marusya-gemini/internal/skills/weather"
 	"github.com/yawaflua/marusya-gemini/internal/speech/geminispeech"
+	"github.com/yawaflua/marusya-gemini/internal/speech/openaispeech"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -81,9 +86,15 @@ var (
 	proxyAddr  = flag.String("proxy", config.Env("MARUSYA_PROXY", ""), `Proxy for the outgoing requests of the server (Gemini, Claude, Spotify, Open-Meteo, Home Assistant, yt-dlp): http://host:3128, https://user:pass@host, socks5://host:1080 or socks5h://host:1080. Empty uses $HTTPS_PROXY / $HTTP_PROXY.`)
 	gemProxy   = flag.String("gemini_proxy", config.Env("MARUSYA_GEMINI_PROXY", ""), `Proxy for Gemini only (REST and Live API), overriding -proxy; "direct" connects Gemini without a proxy. Empty uses -proxy.`)
 	noProxy    = flag.String("no_proxy", config.Env("MARUSYA_NO_PROXY", netproxy.DefaultNoProxy), "Comma separated hosts, .domains and CIDR ranges reached without -proxy / -gemini_proxy. Loopback and single-label hosts (Docker services) are always direct.")
+	pluginsDir = flag.String("plugins_dir", config.Env("MARUSYA_PLUGINS_DIR", ""), "Directory of server plugins, one subdirectory with a plugin.json each (see pkg/pluginsdk). Empty disables plugins.")
+	provFile   = flag.String("providers_file", config.Env("MARUSYA_PROVIDERS_FILE", ""), "File that keeps the model providers added in the web panel (with their API keys) across restarts. Empty keeps them in memory.")
 	settings   = flag.String("settings_file", config.Env("MARUSYA_SETTINGS_FILE", ""), "File that keeps the settings changed in the web panel across restarts. Empty keeps them in memory.")
 
-	providerName = flag.String("provider", config.Env("MARUSYA_PROVIDER", "gemini"), `Model backend: "gemini" (Live API, speech to speech), "claude" (Claude + Gemini speech recognition/TTS) or "echo" (loopback, for testing).`)
+	providerName = flag.String("provider", config.Env("MARUSYA_PROVIDER", "gemini"), `Model backend at startup: "gemini" (Live API, speech to speech), "openai-realtime" (OpenAI Realtime API, speech to speech), "openai" (OpenAI compatible chat + OpenAI speech recognition/TTS), "claude" (Claude + Gemini speech recognition/TTS) or "echo" (loopback, for testing). More providers can be added and switched in the web panel.`)
+	openaiKey    = flag.String("openai_api_key", "", "OpenAI API key. Defaults to $OPENAI_API_KEY.")
+	openaiURL    = flag.String("openai_base_url", config.Env("OPENAI_BASE_URL", ""), "Base URL of an OpenAI compatible API, e.g. https://openrouter.ai/api/v1. Empty uses OpenAI.")
+	openaiModel  = flag.String("openai_model", config.Env("MARUSYA_OPENAI_MODEL", ""), "Model for -provider openai or openai-realtime; empty uses the default (gpt-5-mini, gpt-realtime).")
+	openaiVoice  = flag.String("openai_voice", config.Env("MARUSYA_OPENAI_VOICE", ""), "Voice for -provider openai or openai-realtime, e.g. marin.")
 	model        = flag.String("gemini_model", config.Env("GEMINI_MODEL", gemini.DefaultModel), "Gemini Live API model.")
 	voice        = flag.String("gemini_voice", config.Env("GEMINI_VOICE", "Kore"), "Prebuilt voice name (Kore, Puck, Charon, Aoede, Fenrir, ...).")
 	apiKey       = flag.String("gemini_api_key", "", "Gemini API key. Defaults to $GEMINI_API_KEY / $GOOGLE_API_KEY.")
@@ -160,6 +171,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	bo := registry.BuildOptions{
+		GeminiAPIKey: *apiKey, GoogleSearch: *googleSearch, ClaudeEffort: *claudeEffort, Logger: log,
+	}
+	if px != nil {
+		bo.HTTPClient = px.Client(0)
+	}
+	if gpx != nil {
+		bo.GeminiTransport = gpx.Transport()
+	}
+	reg, err := registry.Open(*provFile, p, registry.NewBuilder(bo), log)
+	if err != nil {
+		log.Error("load providers; using the configured one", "err", err)
+	}
+	if err := reg.Restore(ctx); err != nil {
+		log.Error("restore the provider chosen in the panel; using the configured one", "err", err)
+	}
 
 	var prompt string
 	if *promptFile != "" {
@@ -206,7 +233,9 @@ func run() error {
 	}
 
 	cfg := server.Config{
-		Provider:          p,
+		Providers:         reg,
+		ProvidersFile:     *provFile,
+		PluginsDir:        *pluginsDir,
 		AuthToken:         *authToken,
 		SystemInstruction: prompt,
 		Language:          *language,
@@ -248,6 +277,7 @@ func run() error {
 		}
 	}
 	srv := server.New(cfg)
+	srv.StartPlugins(ctx)
 	hs := &http.Server{
 		Addr:              *listen,
 		Handler:           srv,
@@ -257,7 +287,7 @@ func run() error {
 
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("listening", "version", version, "addr", *listen, "provider", p.Name())
+		log.Info("listening", "version", version, "addr", *listen, "provider", reg.Provider().Name())
 		if *panelPass != "" {
 			log.Info("web panel enabled", "path", "/panel/")
 		} else {
@@ -339,11 +369,32 @@ func newProvider(ctx context.Context, sp *geminispeech.Speech, gpx, px *netproxy
 			cfg.HTTPClient = px.Client(0)
 		}
 		return claude.New(cfg)
+	case "openai-realtime":
+		cfg := openairt.Config{
+			BaseURL: *openaiURL, APIKey: openAIKey(), Model: *openaiModel, Voice: *openaiVoice, Logger: log,
+		}
+		if px != nil {
+			cfg.HTTPClient = px.Client(0)
+		}
+		return openairt.New(cfg)
+	case "openai":
+		scfg := openaispeech.Config{BaseURL: *openaiURL, APIKey: openAIKey(), Voice: *openaiVoice}
+		cfg := openaichat.Config{BaseURL: *openaiURL, APIKey: openAIKey(), Model: *openaiModel, Logger: log}
+		if px != nil {
+			scfg.HTTPClient = px.Client(time.Minute)
+			cfg.HTTPClient = px.Client(0)
+		}
+		osp := openaispeech.New(scfg)
+		cfg.Recognizer, cfg.Synthesizer = osp, osp
+		return openaichat.New(cfg)
 	case "echo":
 		return echo.Provider{}, nil
 	}
 	return nil, fmt.Errorf("unknown provider %q", *providerName)
 }
+
+// openAIKey returns the OpenAI API key from -openai_api_key or $OPENAI_API_KEY.
+func openAIKey() string { return cmp.Or(*openaiKey, os.Getenv("OPENAI_API_KEY")) }
 
 // ytdlpProxyArgs adds --proxy to the yt-dlp arguments, unless they set one.
 func ytdlpProxyArgs(px *netproxy.Proxy, args []string) []string {

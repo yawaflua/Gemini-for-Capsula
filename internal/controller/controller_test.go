@@ -85,3 +85,61 @@ func TestDispatcher(t *testing.T) {
 		})
 	}
 }
+
+type fakeSurface struct {
+	ring    models.RingRequest
+	display models.DisplayRequest
+	resets  int
+}
+
+func (f *fakeSurface) SetRing(_ context.Context, r models.RingRequest) (models.Override, error) {
+	if err := r.Normalize(); err != nil {
+		return models.Override{}, err
+	}
+	f.ring = r
+	return models.Override{Scene: r.Scene, Color: r.Color, Until: time.Now().Add(r.Hold)}, nil
+}
+func (f *fakeSurface) ResetRing(context.Context) error { f.resets++; return nil }
+func (f *fakeSurface) ShowDisplay(_ context.Context, r models.DisplayRequest) (models.Override, error) {
+	if err := r.Normalize(); err != nil {
+		return models.Override{}, err
+	}
+	f.display = r
+	return models.Override{Mode: r.Mode, Text: r.Text, Until: time.Now().Add(r.Hold)}, nil
+}
+func (f *fakeSurface) ResetDisplay(context.Context) error { f.resets++; return nil }
+func (f *fakeSurface) Surface(context.Context) (models.SurfaceState, error) {
+	lux := 42.0
+	return models.SurfaceState{State: "idle", Lux: &lux, HasRing: true}, nil
+}
+
+func TestDispatcherSurface(t *testing.T) {
+	ctx := context.Background()
+	s := &fakeSurface{}
+	d := &controller.Dispatcher{Ring: s, Display: s, Sensors: s}
+	exec := func(a models.Action, args map[string]any) *models.CommandResult {
+		return d.Execute(ctx, &models.Command{Action: a, Args: args})
+	}
+
+	res := exec(models.ActionRingSet, map[string]any{"scene": "spin", "color": "00ff00", "seconds": float64(30)})
+	if !res.OK || s.ring.Scene != "spin" || s.ring.Hold != 30*time.Second || res.Data["seconds"] != 30 {
+		t.Errorf("ring.set: %+v, request %+v", res, s.ring)
+	}
+	if res := exec(models.ActionRingSet, map[string]any{"color": "green"}); res.OK {
+		t.Error("ring.set must reject colour names")
+	}
+	res = exec(models.ActionDisplayShow, map[string]any{"text": "HI"})
+	if !res.OK || s.display.Mode != "text" || s.display.Hold != models.DefaultOverride || res.Data["text"] != "HI" {
+		t.Errorf("display.show: %+v, request %+v", res, s.display)
+	}
+	if !exec(models.ActionRingReset, nil).OK || !exec(models.ActionDisplayReset, nil).OK || s.resets != 2 {
+		t.Error("resets failed")
+	}
+	res = exec(models.ActionSensorsGet, nil)
+	if !res.OK || res.Data["lux"] != 42.0 || res.Data["state"] != "idle" {
+		t.Errorf("sensors.get: %+v", res)
+	}
+	if got := len(d.Capabilities()); got != 5 {
+		t.Errorf("capabilities = %d, want 5", got)
+	}
+}

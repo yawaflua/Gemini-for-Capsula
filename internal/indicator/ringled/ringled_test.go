@@ -20,11 +20,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/yawaflua/marusya-gemini/internal/indicator"
+	"github.com/yawaflua/marusya-gemini/internal/models"
 )
 
 // TestEncodeMatchesFirmware compares with `ringled --dump -b 100 …` output
@@ -188,6 +190,70 @@ func TestRingPriorities(t *testing.T) {
 	}
 }
 
+func TestRingOverride(t *testing.T) {
+	s := &fakeStrip{}
+	r := (&Ring{strip: s, brightness: 30, log: slog.Default(), errorHold: time.Second, interval: 5 * time.Millisecond}).start()
+	defer r.Close()
+	all := func(c RGB, b int) Frame { return fill(scaled(c, b, 1)).frame() }
+	night, _ := ParseRGB(DefaultNightLight)
+	green := RGB{0x00, 0xff, 0x00}
+	r.SetNightLight(context.Background(), true, "", 0)
+	s.settled(t)
+
+	if _, err := r.Override(models.RingRequest{Scene: "fireworks"}); err == nil {
+		t.Error("unknown scenes must be rejected")
+	}
+	until, err := r.Override(models.RingRequest{Scene: "solid", Color: "#00FF00", Brightness: 50, Hold: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Until(until); d < 1500*time.Millisecond || d > 2*time.Second {
+		t.Errorf("until in %s, want about 2s", d)
+	}
+	steps := []struct {
+		name string
+		do   func()
+		want Frame
+	}{
+		{"override wins over night light", func() {}, all(green, 50)},
+		{"listening wins over override", func() { r.Show(indicator.Listening) }, all(colorListening, 30)},
+		{"back to override", func() { r.Show(indicator.Idle) }, all(green, 50)},
+		{"expires to night light", func() { time.Sleep(time.Until(until)) }, all(night, 30)},
+		{"default colour and brightness", func() { r.Override(models.RingRequest{}) }, all(RGB{0xff, 0xff, 0xff}, 30)},
+		{"reset", r.ResetOverride, all(night, 30)},
+		{"off scene", func() { r.Override(models.RingRequest{Scene: "off"}) }, Frame{}},
+	}
+	for _, st := range steps {
+		st.do()
+		if got := s.settled(t); got != st.want {
+			t.Errorf("%s: %v, want %v", st.name, got, st.want)
+		}
+	}
+}
+
+func TestManualScenesMove(t *testing.T) {
+	for _, name := range models.RingScenes {
+		sc := manual(name, look{color: RGB{0xff, 0, 0}, bright: 100})
+		a, moving := sc.at(0)
+		b, _ := sc.at(130 * time.Millisecond)
+		switch name {
+		case "solid", "off", "disconnected":
+			if moving || a != b {
+				t.Errorf("%s should be still", name)
+			}
+		case "listening", "error":
+			// settle into a steady colour
+		default:
+			if !moving || a == b {
+				t.Errorf("%s should move", name)
+			}
+		}
+	}
+	if hue(0) != (RGB{255, 0, 0}) || hue(1.0/3) != (RGB{0, 255, 0}) || hue(2.0/3) != (RGB{0, 0, 255}) {
+		t.Errorf("hue: %v %v %v", hue(0), hue(1.0/3), hue(2.0/3))
+	}
+}
+
 func TestDetect(t *testing.T) {
 	dir := t.TempDir()
 	defer func(c, d string) { compatiblePath, spiDriver = c, d }(compatiblePath, spiDriver)
@@ -212,5 +278,56 @@ func TestDetect(t *testing.T) {
 		if got := Detect(); got != tc.want {
 			t.Errorf("Detect() with %q, driver %v = %v, want %v", tc.compatible, tc.driver, got, tc.want)
 		}
+	}
+}
+
+func TestLEDStrip(t *testing.T) {
+	dir := t.TempDir()
+	defer func(r string) { ledsRoot = r }(ledsRoot)
+	ledsRoot = dir
+	if LEDsAvailable() {
+		t.Fatal("LEDsAvailable without LEDs")
+	}
+	for i := 1; i <= Pixels*3; i++ {
+		d := filepath.Join(dir, "top-led"+strconv.Itoa(i))
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "brightness"), []byte("0"), 0o644)
+		os.WriteFile(filepath.Join(d, "max_brightness"), []byte("255"), 0o644)
+		os.WriteFile(filepath.Join(d, "trigger"), nil, 0o644)
+	}
+	if !LEDsAvailable() {
+		t.Fatal("LEDsAvailable = false")
+	}
+	s, err := NewLEDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f Frame
+	f[0] = RGB{R: 255}
+	f[11] = RGB{G: 10, B: 200}
+	if err := s.Write(f); err != nil {
+		t.Fatal(err)
+	}
+	read := func(n int) string {
+		b, _ := os.ReadFile(filepath.Join(dir, "top-led"+strconv.Itoa(n), "brightness"))
+		return string(b)
+	}
+	for n, want := range map[int]string{1: "255", 2: "0", 3: "0", 34: "0", 35: "10", 36: "200"} {
+		if got := read(n); got != want {
+			t.Errorf("top-led%d = %q, want %q", n, got, want)
+		}
+	}
+	// Unchanged channels are not written again.
+	os.WriteFile(filepath.Join(dir, "top-led1", "brightness"), []byte("x"), 0o644)
+	f[11].B = 0
+	if err := s.Write(f); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(1); got != "x" {
+		t.Errorf("unchanged top-led1 rewritten: %q", got)
+	}
+	// A regular file keeps the tail of a longer old value; sysfs does not.
+	if got, _ := strconv.Atoi(read(36)); got != 0 {
+		t.Errorf("top-led36 = %d, want 0", got)
 	}
 }

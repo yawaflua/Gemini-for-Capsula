@@ -53,7 +53,8 @@ type deviceSession struct {
 	log       *slog.Logger
 	ctx       context.Context
 	hello     *models.Hello
-	vad       bool // the provider detects the end of speech
+	vad       bool               // the provider detects the end of speech
+	format    models.AudioFormat // the format of the model's speech, told the device in ready
 	remote    string
 	connected time.Time
 
@@ -234,6 +235,7 @@ func (d *deviceSession) handshake(ctx context.Context) error {
 	}
 	d.hello = h
 	d.vad = d.cfg.ServerVAD && provider.SupportsServerVAD(d.cfg.Provider)
+	d.format = d.cfg.Provider.OutputFormat()
 	d.log = d.log.With("device", h.DeviceID)
 	d.log.Info("device connected", "capabilities", len(h.Capabilities), "language", h.Language,
 		"location", h.Location, "timezone", h.TimeZone)
@@ -242,7 +244,7 @@ func (d *deviceSession) handshake(ctx context.Context) error {
 		Type: models.TypeReady,
 		Ready: &models.Ready{
 			SessionID:    d.id,
-			OutputFormat: d.cfg.Provider.OutputFormat(),
+			OutputFormat: d.format,
 			ServerVAD:    d.vad,
 		},
 	})
@@ -297,6 +299,8 @@ func (d *deviceSession) onMessage(m *models.Message) {
 		d.resolve(m.CommandResult)
 	case models.TypeLog:
 		d.deviceLog(m.Log)
+	case models.TypePlugin:
+		d.onPluginMessage(m.Plugin)
 	default:
 		d.log.Warn("unexpected message", "type", m.Type)
 	}
@@ -384,6 +388,13 @@ func (d *deviceSession) session() (provider.Session, error) {
 }
 
 func (d *deviceSession) connect() (provider.Session, error) {
+	if d.stale() {
+		// The device was told another audio format or end-of-speech
+		// detection: it must reconnect to learn the new ones.
+		d.log.Info("provider changed; reconnecting the device")
+		d.conn.Close("provider changed")
+		return nil, errProviderChanged
+	}
 	set := d.srv.Settings()
 	e := d.effective()
 	lang := e.Language
@@ -395,7 +406,7 @@ func (d *deviceSession) connect() (provider.Session, error) {
 		Language:          lang,
 		ExtraLanguages:    extraLanguages(lang, e.ExtraLanguages),
 		InputFormat:       d.hello.InputFormat,
-		Tools:             append(tools.For(d.hello.Capabilities), d.cfg.Skills.Tools()...),
+		Tools:             slices.Concat(tools.For(d.hello.Capabilities), d.cfg.Skills.Tools(), d.pluginTools()),
 		ServerVAD:         d.vad,
 	})
 	if err != nil {
@@ -404,6 +415,28 @@ func (d *deviceSession) connect() (provider.Session, error) {
 	d.log.Info("provider session opened", "provider", d.cfg.Provider.Name(), "latency", time.Since(start))
 	d.srv.events.devicesChanged()
 	return ps, nil
+}
+
+// errProviderChanged means the device must reconnect, see stale.
+var errProviderChanged = errors.New("the provider changed; the device reconnects")
+
+// stale reports whether the provider changed in a way the device must
+// learn from a new handshake.
+func (d *deviceSession) stale() bool {
+	vad := d.cfg.ServerVAD && provider.SupportsServerVAD(d.cfg.Provider)
+	return vad != d.vad || d.cfg.Provider.OutputFormat() != d.format
+}
+
+// providerChanged makes the device use the new provider: an idle one
+// right away, a busy one from its next turn.
+func (d *deviceSession) providerChanged() {
+	d.mu.Lock()
+	d.retiring = d.ps != nil
+	busy := d.inTurn || d.awaiting
+	d.mu.Unlock()
+	if !busy {
+		d.prewarm()
+	}
 }
 
 // prewarm opens a provider session in the background so the next turn does
@@ -798,7 +831,26 @@ func (d *deviceSession) execute(turnID string, c provider.ToolCall, suppressed b
 		d.srv.events.publish(ev)
 		return res, true
 	}
+	if t, ok := d.srv.plugins.Lookup(c.Name); ok {
+		if suppressed {
+			res.Err = "the user cancelled the request"
+			return res, true
+		}
+		out, err := d.runPlugin(pluginCall{plugin: t.Plugin, name: c.Name, args: c.Args})
+		if err != nil {
+			res.Err = err.Error()
+		} else {
+			res.Output = out
+		}
+		return res, true
+	}
 	tool, ok := tools.Lookup(c.Name)
+	if !ok {
+		// A function of a plugin on the speaker runs like an action.
+		if _, ok = d.agentTools()[c.Name]; ok {
+			tool = tools.Tool{Action: models.Action(c.Name)}
+		}
+	}
 	switch {
 	case !ok:
 		res.Err = fmt.Sprintf("unknown function %q", c.Name)
@@ -850,7 +902,8 @@ func (d *deviceSession) command(ctx context.Context, turnID, id string, action m
 	start := time.Now()
 	// The panel polls the state of the speaker; only actions are history.
 	quiet := source == SourcePanel && (action == models.ActionVolumeGet ||
-		action == models.ActionMediaStatus || action == models.ActionBluetoothDevices)
+		action == models.ActionMediaStatus || action == models.ActionBluetoothDevices ||
+		action == models.ActionSensorsGet)
 	publish := func(ev Event) {
 		if !quiet {
 			d.srv.events.publish(ev)
@@ -858,7 +911,12 @@ func (d *deviceSession) command(ctx context.Context, turnID, id string, action m
 	}
 	ev := Event{Kind: EventCommand, Session: d.id, Device: d.hello.DeviceID, Source: source, Name: string(action), Args: args}
 	cmd := &models.Command{ID: id, Action: action, Args: args}
-	d.log.Info("command", "action", cmd.Action, "args", cmd.Args, "source", source)
+	// The panel polls the sensors every few seconds: keep that out of the log.
+	level := slog.LevelInfo
+	if quiet && action == models.ActionSensorsGet {
+		level = slog.LevelDebug
+	}
+	d.log.Log(ctx, level, "command", "action", cmd.Action, "args", cmd.Args, "source", source)
 	if err := d.send(&models.Message{Type: models.TypeCommand, TurnID: turnID, Command: cmd}); err != nil {
 		err = fmt.Errorf("device unreachable: %w", err)
 		ev.Error = err.Error()
@@ -873,7 +931,7 @@ func (d *deviceSession) command(ctx context.Context, turnID, id string, action m
 		if !ok {
 			return nil, errCommandCancelled
 		}
-		d.log.Info("command result", "action", cmd.Action, "ok", r.OK, "err", r.Error)
+		d.log.Log(ctx, level, "command result", "action", cmd.Action, "ok", r.OK, "err", r.Error)
 		ev.Result, ev.Error, ev.LatencyMS = r.Data, r.Error, time.Since(start).Milliseconds()
 		publish(ev)
 		return r, nil
@@ -1015,8 +1073,9 @@ func (d *deviceSession) forget() error {
 
 // supports reports whether the device can execute action.
 func (d *deviceSession) supports(action models.Action) bool {
-	if _, ok := tools.Lookup(tools.NameOf(action)); !ok {
-		return false
+	if !tools.Known(action) {
+		_, ok := d.agentTools()[string(action)]
+		return ok
 	}
 	return len(d.hello.Capabilities) == 0 || slices.Contains(d.hello.Capabilities, action)
 }

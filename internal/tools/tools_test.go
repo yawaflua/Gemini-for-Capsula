@@ -38,3 +38,12 @@ func TestFor(t *testing.T) {
 		t.Error("For(nil) should return every tool")
 	}
 }
+
+func TestKnown(t *testing.T) {
+	if !Known(models.ActionRingSet) || !Known(models.ActionSensorsGet) || Known("ring.explode") {
+		t.Error("Known")
+	}
+	if _, ok := Lookup(NameOf(models.ActionSensorsGet)); ok {
+		t.Error("panel-only actions must not be model tools")
+	}
+}

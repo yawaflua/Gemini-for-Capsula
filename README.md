@@ -46,7 +46,15 @@ internal/
   transport/            WebSocket-транспорт (общий для обеих сторон)
   provider/             интерфейс Provider/Session для realtime-модели
     gemini/             реализация на Gemini Live API (google.golang.org/genai)
+    openairt/           OpenAI Realtime API (голос в голос)
+    pipeline/           речь → текстовая модель → речь, общий для текстовых моделей
+    claude/             Claude (Anthropic Messages API) поверх pipeline
+    openaichat/         OpenAI-совместимый Chat Completions поверх pipeline
+    registry/           провайдеры из веб-панели и переключение между ними
     echo/               loopback-провайдер для отладки без квоты
+  speech/               распознавание и синтез речи для текстовых моделей
+    geminispeech/       через Gemini
+    openaispeech/       через OpenAI-совместимые /audio/transcriptions и /audio/speech
   tools/                описание функций, доступных модели (не зависит от провайдера)
   server/               HTTP/WS-сервер и мост устройство ⇄ провайдер
   agent/                машина состояний устройства (idle → listening → thinking → speaking)
@@ -63,6 +71,8 @@ internal/
   display/seg7/         драйвер 7-сегментной панели (line-display sysfs)
   sensor/light/         датчик освещённости (IIO)
   touchkeys/            сенсорная панель: громкость, mute, next, центр = активация
+  surface/              кольцо, экран, датчики и кнопки вместе: ручное управление на время
+  dbusapi/              сервис ru.marusya.Agent на системной шине D-Bus
   evdev/                чтение клавиш из /dev/input/eventN
   controller/           интерфейсы Volume/Media/Bluetooth и Dispatcher команд
     amixer/             громкость через ALSA amixer
@@ -72,16 +82,21 @@ internal/
     stream/             звук YouTube и радио, который декодирует сервер
   media/                поиск и стриминг звука: интерфейс Source, HTTP-клиент колонки
     ytdlp/              реализация через yt-dlp + ffmpeg (на сервере)
+  plugin/               запуск плагинов: манифесты, процессы, перезапуск, инструменты
   syscmd/               запуск системных утилит (с подменой в тестах)
   config/, logging/     общие хелперы для main
 deploy/                 Dockerfile, docker-compose, OpenRC-сервис для колонки
+pkg/pluginsdk/          протокол плагинов и SDK для Go (jsonrpc/: транспорт)
+sdk/                    SDK плагинов для C++ (один заголовок) и Python
+examples/plugins/       примеры плагинов: coin (Python), dice (Go), speaker-stats (C++ + Python)
 configs/                примеры конфигов (server.env, /etc/conf.d/marusya-agent)
 scripts/wakeword/       пример keyword-spotter на openWakeWord
 ```
 
 Чтобы заменить бэкенд, достаточно реализовать нужный интерфейс:
 `provider.Provider` (другая LLM), `audio.Player`/`audio.Capturer` (другой звук),
-`wakeword.Detector`, `controller.Volume|Media|Bluetooth`.
+`wakeword.Detector`, `controller.Volume|Media|Bluetooth`. Новые функции для модели
+удобнее добавлять плагинами, без пересборки (см. «Плагины»).
 
 ## Сборка
 
@@ -138,7 +153,9 @@ MARUSYA_PANEL_PASSWORD=придумайте-пароль
 
 - **Колонки**: какие колонки подключены, с какого IP, слушают или думают ли они сейчас.
   Там же пульт: громкость, музыка (пауза, следующий трек, поток по ссылке), ночник
-  и Bluetooth. Ещё можно задать вопрос текстом: Маруся ответит голосом из колонки.
+  и Bluetooth. Карточка «Кольцо и экран» зажигает кольцо любым цветом или анимацией,
+  выводит на экран текст или часы и показывает датчики (подробнее в разделе
+  «Кольцо и экран вручную»). Ещё можно задать вопрос текстом: Маруся ответит голосом из колонки.
   «Забыть разговор» сбрасывает контекст диалога.
 - **История**: что услышала колонка, что ответила Маруся, какие команды и навыки
   вызывались, подключения и ошибки. Лента обновляется вживую и хранит последние 500
@@ -148,6 +165,11 @@ MARUSYA_PANEL_PASSWORD=придумайте-пароль
   получат со следующим вопросом. В Docker настройки сохраняются в томе `marusya-data`
   (`MARUSYA_SETTINGS_FILE=/data/settings.json`) и важнее значений из `server.env`.
   Кнопка «Вернуть как при запуске» удаляет сохранённые изменения.
+- **Провайдеры**: какие модели отвечают. Можно добавить Gemini Live, OpenAI Realtime,
+  OpenAI-совместимый чат (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…) и
+  Claude, у каждого свой ключ, адрес API и модель, и переключаться между ними на лету.
+  Ключи хранятся на сервере (`MARUSYA_PROVIDERS_FILE=/data/providers.json`, права 0600)
+  и в панель не возвращаются. Подробнее в разделе «Другие модели».
 
 Чтобы задавать вопросы текстом, нужен агент с поддержкой `remote_turn`. Колонка
 скачивает агент с сервера при загрузке, так что после обновления сервера её достаточно
@@ -226,6 +248,36 @@ yt-dlp дополнительные аргументы, например `--js-r
 YouTube часто меняется: если поиск перестал работать, пересоберите образ, чтобы
 скачался свежий yt-dlp. На колонке функцию выключает `-server_streams=false`.
 
+### Другие модели: OpenAI, Claude, совместимые API
+
+Модель выбирается при запуске флагом `-provider`, а во вкладке «Провайдеры» веб-панели
+можно добавить сколько угодно провайдеров и переключаться между ними без перезапуска.
+
+| Тип | Как отвечает | Что нужно |
+|---|---|---|
+| Gemini Live | голос в голос | ключ Gemini; адрес API можно заменить на Gemini-совместимый шлюз |
+| OpenAI Realtime | голос в голос (`gpt-realtime`), конец фразы определяет модель | ключ OpenAI |
+| OpenAI-совместимый чат | распознавание речи → текстовая модель → озвучка по предложениям | ключ и адрес API, например `https://openrouter.ai/api/v1` или `http://ollama:11434/v1` |
+| Anthropic Claude | так же, через Claude | ключ Anthropic или профиль `ant auth login` |
+
+Текстовым моделям нужны «слух» и «голос». В карточке провайдера их выбирают так:
+Gemini сервера (`GEMINI_API_KEY`), «этот же API» (эндпоинты `/audio/transcriptions` и
+`/audio/speech`, есть у OpenAI, LocalAI, Speaches) или ключ другого провайдера Gemini/OpenAI.
+Если у нового провайдера другой формат звука или он сам определяет конец фразы, колонки
+переподключатся примерно за секунду. Модель и голос из «Настроек» относятся к
+выбранному провайдеру и сохраняются в нём.
+
+Вход только по API-ключам: подписки ChatGPT и Claude.ai для сторонних приложений
+не предназначены.
+
+OpenAI можно выбрать и при запуске:
+
+```bash
+OPENAI_API_KEY=... ./bin/marusya-server -provider openai-realtime -openai_voice marin
+OPENAI_API_KEY=... ./bin/marusya-server -provider openai \
+    -openai_base_url https://openrouter.ai/api/v1 -openai_model google/gemini-2.5-flash
+```
+
 ### Claude вместо Gemini
 
 `-provider claude` отвечает через Claude (по умолчанию `claude-haiku-5-5`, флаг
@@ -303,6 +355,12 @@ tail -f /tmp/marusya-agent.log
 | LED-кольцо | `spidev` (`/dev/spidev0.0`) на контроллере `meson-spicc` |
 | сенсорные кнопки | evdev, `/dev/input/eventN` |
 
+Сборки на стоковом ядре 4.9 устроены иначе, и агент это определяет сам. На них нет `line-display`,
+а сегменты экрана называются `clock-led1` … `clock-led28`: по 7 на цифру, сегменты a…g по порядку,
+`clock-led30` — точка двоеточия. Кольцо там висит на втором контроллере is31fl32xx и видно как
+`top-led1` … `top-led36`, по три светодиода (R, G, B) на пиксель. Если мордашка на таком экране
+вверх ногами, задайте `MARUSYA_DISPLAY_ROTATE=true`.
+
 Сервис `mordy` нужно выключить (`rc-service mordy stop; rc-update del mordy`), иначе он тоже
 будет рисовать на экране.
 
@@ -328,6 +386,65 @@ tail -f /tmp/marusya-agent.log
 сдвигаются `00. ` / ` .00`), слушает — большие глаза, думает — глаза бегают,
 отвечает — довольные `∩ . ∩`, ошибка — грустная, нет связи — грустная и засыпает.
 
+### Кольцо и экран вручную
+
+Кольцом и экраном можно управлять из веб-панели (карточка «Кольцо и экран»), по D-Bus
+прямо на колонке, а кольцом ещё и голосом: «сделай кольцо синим», «включи радугу».
+
+- **Кольцо**: цвет, яркость и анимация: ровный цвет, дыхание, бегущий огонь, пульс,
+  радуга или любой из обычных видов Маруси («слушаю», «думаю», …).
+- **Экран**: текст до 4 знаков (латиница, цифры, знаки, как умеет 7-сегментный экран),
+  часы, «спать», «не спать» (не засыпать в темноте), погасить и яркость. Яркость 0 значит
+  «по датчику света».
+- **Датчики**: освещённость, спит ли мордашка, выключен ли микрофон кнопкой, последняя
+  нажатая кнопка и что сейчас делает Маруся. Панель обновляет их раз в 5 секунд.
+
+Ручной режим всегда временный: по умолчанию 10 минут, максимум 12 часов, потом колонка
+сама возвращается к обычному виду. «Как обычно» возвращает сразу. Пока Маруся слушает
+или отвечает, кольцо и экран показывают это поверх, а затем снова ручной режим. Для
+постоянного света есть ночник.
+
+Карточка появляется, только если агент на колонке это умеет. После обновления сервера
+перезагрузите колонку, и она скачает новый агент.
+
+#### D-Bus
+
+Агент публикует на системной шине сервис `ru.marusya.Agent`, объект `/ru/marusya/Agent`.
+Им могут пользоваться свои скрипты и плагины на колонке, сервер для этого не нужен.
+
+| Интерфейс | Методы | Свойства |
+|---|---|---|
+| `ru.marusya.Agent` | | `State` (idle, listening, thinking, speaking, …), `MicMuted`, `Version` |
+| `ru.marusya.Agent.Ring` | `Play(s scene, s color, i brightness, u seconds)`, `SetColor(s color, i brightness, u seconds)`, `Reset()` | `Scenes`, `Override` |
+| `ru.marusya.Agent.Display` | `ShowText(s text, u seconds)`, `ShowClock(u seconds)`, `SetMode(s mode, s text, i brightness, u seconds)`, `Reset()` | `Modes`, `Override`, `Asleep` |
+| `ru.marusya.Agent.Sensors` | сигнал `Key(s name, q code, b pressed)` | `AmbientLight` (лк), `HasAmbientLight`, `LastKey` |
+
+Все свойства присылают `PropertiesChanged`. `seconds = 0` значит 10 минут, пустой цвет и
+нулевая яркость дают значения по умолчанию. `Override` — словарь `active`, `scene`/`mode`,
+`text`, `color`, `brightness`, `until` (Unix-время); `active = false`, когда всё как обычно.
+Кнопки называются `voice`, `next`, `mic`, `volume_up`, `volume_down`.
+
+Сервису нужно разрешение на шине: скопируйте
+[deploy/agent/ru.marusya.Agent.conf](deploy/agent/ru.marusya.Agent.conf) в
+`/etc/dbus-1/system.d/` и выполните `rc-service dbus reload`. Управлять кольцом и экраном
+могут root и группа `marusya`, читать свойства и слушать сигналы может кто угодно.
+Без шины или без разрешения агент просто работает дальше без сервиса, выключить его
+можно `MARUSYA_DBUS=false`.
+
+```bash
+# радуга на минуту
+dbus-send --system --print-reply --dest=ru.marusya.Agent /ru/marusya/Agent \
+  ru.marusya.Agent.Ring.Play string:rainbow string: int32:0 uint32:60
+# текст на экране на 10 минут
+dbus-send --system --print-reply --dest=ru.marusya.Agent /ru/marusya/Agent \
+  ru.marusya.Agent.Display.ShowText string:HI uint32:0
+# освещённость
+dbus-send --system --print-reply --dest=ru.marusya.Agent /ru/marusya/Agent \
+  org.freedesktop.DBus.Properties.Get string:ru.marusya.Agent.Sensors string:AmbientLight
+# следить за кнопками и датчиками
+dbus-monitor --system "sender='ru.marusya.Agent'"
+```
+
 ### Bluetooth-колонка (`bt-pair`)
 
 Если на колонке есть `bt-pair` (режим сопряжения, после которого Капсулу можно использовать
@@ -348,7 +465,8 @@ tail -f /tmp/marusya-agent.log
 | `-bt_pair_command` | утилита сопряжения: `auto` (по умолчанию) — `bt-pair`, если он есть в PATH; можно указать `bt-pair {timeout}`; пустая строка — встроенный сценарий через `bluetoothctl` |
 | `-mpv_socket` | сокет mpv; пустое значение отключает управление музыкой |
 | `-vad_threshold_db`, `-vad_silence` | чувствительность VAD и длина паузы, завершающей фразу |
-| `-ring`, `-ringled_brightness` | LED-кольцо: `auto` (по умолчанию) включает его на VK Капсуле Мини, которую агент узнаёт по device tree (`vk,capsula-mini`), `on` включает всегда, пустое значение отключает. Слушает — синяя вспышка волной от кнопки мута, думает — фиолетовая «комета» крутится по кольцу, отвечает — зелёное дыхание, ошибка — два красных мигания, нет связи — тусклый красный. Мут — красный растекается от кнопки MICMUTE на всё кольцо и уходит обратно в неё; громкость — белая дуга на полторы секунды |
+| `-ring`, `-ringled_brightness` | LED-кольцо: `auto` (по умолчанию) включает его на VK Капсуле Мини, которую агент узнаёт по device tree (`vk,capsula-mini`), или на стоковом ядре, где кольцо — это `top-led1…36`; `on` включает всегда, пустое значение отключает. Слушает — синяя вспышка волной от кнопки мута, думает — фиолетовая «комета» крутится по кольцу, отвечает — зелёное дыхание, ошибка — два красных мигания, нет связи — тусклый красный. Мут — красный растекается от кнопки MICMUTE на всё кольцо и уходит обратно в неё; громкость — белая дуга на полторы секунды |
+| `-display_rotate` | перевернуть мордашку на экране из `clock-led1…30` (сборки на стоковом ядре) |
 | `-ring_dev` | spidev-узел кольца, по умолчанию `/dev/spidev0.0`; кадры пишутся прямо в него, 30 к/с |
 | `-ring_demo` | показать все анимации кольца по очереди и выйти (остановите сервис перед запуском) |
 | `-follow_up`, `-duck_media`, `-earcons` | поведение диалога |
@@ -464,6 +582,24 @@ marusya-ask -server http://192.168.31.80:8080 -token "$MARUSYA_AUTH_TOKEN" -list
 
 Код, ссылки и markdown выбрасываются. Ответ передаётся Claude как распознанная речь, с пометкой, что возможны ошибки распознавания.
 
+### AirPlay
+
+Колонка принимает AirPlay 2 с iPhone, iPad и Mac через shairport-sync. Готовая сборка
+для Капсулы Мини (shairport-sync, nqptp, avahi, сервисы OpenRC):
+[ryysel/capsula-mini-airplay2](https://github.com/ryysel/capsula-mini-airplay2).
+Установите её по инструкции оттуда (`install.sh --name "Маруся"`).
+
+Агент сам находит shairport-sync на системной D-Bus (`org.gnome.ShairportSync`), отдельно
+ничего настраивать не нужно. Пока телефон играет на колонку:
+
+- «пауза», «дальше», «что играет» голосом и в панели уходят на телефон, а не в mpv или spotifyd;
+- на время вопроса музыка ставится на паузу и потом продолжается, как и для остальных плееров;
+- если попросить включить что-то другое (YouTube, Spotify), AirPlay ставится на паузу.
+
+Если shairport-sync не запущен или телефон отключился, команды идут обычному плееру.
+Выключить: `MARUSYA_AIRPLAY=false`. Команды доходят до телефона с задержкой около секунды
+(протокол DACP).
+
 ### Spotify
 
 Если Spotify настроен, музыка по умолчанию идёт из него: «Маруся, включи Кино — Группа
@@ -526,6 +662,86 @@ spotifyd 0.4 показывает плеер MPRIS, только пока он �
 (`rs.spotifyd.Controls.TransferPlayback`), и выбирать колонку в приложении не нужно.
 
 Ищутся только публичные плейлисты: личные плейлисты пользователя серверу не видны.
+
+### Плагины
+
+Плагин добавляет модели новые функции и реагирует на события, не требуя пересборки сервера
+или агента. Это отдельная программа в своей папке рядом с файлом `plugin.json`. Сервер или
+агент запускает её и общается с ней по JSON-RPC 2.0 через stdin/stdout, по одному сообщению
+на строку. Писать плагины можно на любом языке; готовые SDK есть для Go
+([pkg/pluginsdk](pkg/pluginsdk)), C++ ([sdk/cpp](sdk/cpp/marusya_plugin.hpp), один заголовок
+без зависимостей) и Python ([sdk/python](sdk/python/marusya_plugin.py), только стандартная
+библиотека). Протокол описан в [sdk/README.md](sdk/README.md).
+
+Плагин может работать в одном из трёх вариантов:
+- **на сервере**: интернет-сервисы, ключи API, общие данные всех колонок;
+- **на колонке**: железо, файлы и процессы колонки (агент собран статически, поэтому
+  плагин для колонки удобнее всего писать на Go или C++ и собирать под `linux/arm64` статически);
+- **в обеих половинах сразу**: половины обмениваются сообщениями через соединение колонки
+  с сервером.
+
+```json
+{
+  "id": "dice",
+  "name": "Кубики",
+  "version": "1.0.0",
+  "description": "Бросает игральные кубики",
+  "server": {"command": ["./dice"]},
+  "agent":  {"command": ["./dice-agent"], "env": {"X": "1"}},
+  "config": {"max_dice": 10}
+}
+```
+
+Включаются плагины каталогом: `MARUSYA_PLUGINS_DIR` (флаг `-plugins_dir`) на сервере и в
+`/etc/conf.d/marusya-agent` на колонке. В каталоге лежит по папке на плагин.
+
+Что умеет плагин:
+- **объявлять функции** для модели. Модель вызывает их как встроенные. Имена, занятые встроенными
+  функциями, отклоняются;
+- **выполнять действия на колонке** (`host.command`): громкость, музыка, кольцо — всё, что
+  есть в `hello.capabilities`;
+- **говорить через колонку** (`host.say`, только на сервере), в том числе с вопросом и ответом,
+  как `/v1/ask`;
+- **получать события**: на сервере `connect`, `disconnect`, `turn`, `command`, `skill`, `wake`;
+  на колонке `state` (`idle`, `listening`, `thinking`, `speaking`...);
+- **писать в лог** сервера или агента (а также через stderr).
+
+Упавший плагин перезапускается с паузой от 1 секунды до минуты. Во вкладке **«Плагины»**
+веб-панели видно состояние каждого плагина и его функции. Там же плагин можно выключить,
+перезапустить и поменять его настройки (поле `config`, хранится в
+`<каталог>/.state.json`). Новые папки подхватываются кнопкой «Найти новые». Функции плагинов
+колонок тоже показаны в панели. Когда у плагина колонки меняется набор функций, агент
+переподключается к серверу и сообщает новый список.
+
+Примеры в [examples/plugins](examples/plugins):
+
+```sh
+# самый простой: «подбрось монетку», Python, собирать не нужно
+cp -r examples/plugins/coin plugins/
+cp sdk/python/marusya_plugin.py plugins/coin/
+# серверный плагин на Go
+go build -o examples/plugins/dice/dice ./examples/plugins/dice
+# двусторонний: колонка на C++, сервер на Python
+make -C examples/plugins/speaker-stats CXX=aarch64-linux-gnu-g++ LDFLAGS=-static
+```
+
+Плагин на Go — обычная программа:
+
+```go
+p := pluginsdk.New()
+p.Tool(pluginsdk.ToolSpec{
+	Name:        "roll_dice",
+	Description: "Rolls dice and returns the values.",
+	Params:      []pluginsdk.Param{{Name: "count", Type: pluginsdk.TypeInteger}},
+}, func(ctx context.Context, c pluginsdk.Call) (any, error) {
+	p.Command(ctx, c.Device.ID, "ring.set", map[string]any{"scene": "rainbow"})
+	return map[string]any{"values": []int{4}}, nil
+})
+log.Fatal(p.Run())
+```
+
+Плагины выполняются с правами сервера или агента (на колонке это root). Ставьте только те
+плагины, которым доверяете.
 
 ### Home Assistant
 
@@ -594,5 +810,8 @@ WebSocket `GET /v1/stream`, авторизация `Authorization: Bearer <token
 | `command` / `command_result` | ← / → | вызов функции модели и результат |
 | `interrupted` / `turn_complete` | ← | ответ прерван / завершён |
 | `error` | ← | ошибка |
+| `plugin` | ↔ | данные между половинами плагина (только при `features: ["plugins"]`) |
 
 Модели передаются только инструменты, которые устройство объявило в `hello.capabilities`.
+Из действий кольца, экрана и датчиков модель получает только `ring_set`; `ring.reset`,
+`display.show`, `display.reset` и `sensors.get` доступны панели, но не модели.
