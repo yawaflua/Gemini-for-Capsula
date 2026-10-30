@@ -272,6 +272,8 @@ func schemaType(t tools.Type) genai.Type {
 		return genai.TypeInteger
 	case tools.TypeBoolean:
 		return genai.TypeBoolean
+	case tools.TypeNumber:
+		return genai.TypeNumber
 	default:
 		return genai.TypeString
 	}

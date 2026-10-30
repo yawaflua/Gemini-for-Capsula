@@ -299,6 +299,8 @@ func (d *deviceSession) onMessage(m *models.Message) {
 		d.resolve(m.CommandResult)
 	case models.TypeLog:
 		d.deviceLog(m.Log)
+	case models.TypePlugin:
+		d.onPluginMessage(m.Plugin)
 	default:
 		d.log.Warn("unexpected message", "type", m.Type)
 	}
@@ -404,7 +406,7 @@ func (d *deviceSession) connect() (provider.Session, error) {
 		Language:          lang,
 		ExtraLanguages:    extraLanguages(lang, e.ExtraLanguages),
 		InputFormat:       d.hello.InputFormat,
-		Tools:             append(tools.For(d.hello.Capabilities), d.cfg.Skills.Tools()...),
+		Tools:             slices.Concat(tools.For(d.hello.Capabilities), d.cfg.Skills.Tools(), d.pluginTools()),
 		ServerVAD:         d.vad,
 	})
 	if err != nil {
@@ -829,7 +831,26 @@ func (d *deviceSession) execute(turnID string, c provider.ToolCall, suppressed b
 		d.srv.events.publish(ev)
 		return res, true
 	}
+	if t, ok := d.srv.plugins.Lookup(c.Name); ok {
+		if suppressed {
+			res.Err = "the user cancelled the request"
+			return res, true
+		}
+		out, err := d.runPlugin(pluginCall{plugin: t.Plugin, name: c.Name, args: c.Args})
+		if err != nil {
+			res.Err = err.Error()
+		} else {
+			res.Output = out
+		}
+		return res, true
+	}
 	tool, ok := tools.Lookup(c.Name)
+	if !ok {
+		// A function of a plugin on the speaker runs like an action.
+		if _, ok = d.agentTools()[c.Name]; ok {
+			tool = tools.Tool{Action: models.Action(c.Name)}
+		}
+	}
 	switch {
 	case !ok:
 		res.Err = fmt.Sprintf("unknown function %q", c.Name)
@@ -1053,7 +1074,8 @@ func (d *deviceSession) forget() error {
 // supports reports whether the device can execute action.
 func (d *deviceSession) supports(action models.Action) bool {
 	if !tools.Known(action) {
-		return false
+		_, ok := d.agentTools()[string(action)]
+		return ok
 	}
 	return len(d.hello.Capabilities) == 0 || slices.Contains(d.hello.Capabilities, action)
 }

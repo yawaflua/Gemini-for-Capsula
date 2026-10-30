@@ -29,8 +29,13 @@ services:
       MARUSYA_PROFILES_FILE: /data/devices.json
       # Alarms and timers of the speakers.
       MARUSYA_ALARMS_FILE: /data/alarms.json
+      # Server plugins (see sdk/README.md) from ./plugins of the repository.
+      # .state.json there keeps which are disabled and their settings: make
+      # the directory writable by the container (chown 65532 plugins).
+      MARUSYA_PLUGINS_DIR: /plugins
     volumes:
       - marusya-data:/data
+      - ../../plugins:/plugins
     read_only: true
     tmpfs:
       - /tmp

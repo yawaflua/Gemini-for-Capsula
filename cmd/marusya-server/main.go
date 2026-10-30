@@ -86,6 +86,7 @@ var (
 	proxyAddr  = flag.String("proxy", config.Env("MARUSYA_PROXY", ""), `Proxy for the outgoing requests of the server (Gemini, Claude, Spotify, Open-Meteo, Home Assistant, yt-dlp): http://host:3128, https://user:pass@host, socks5://host:1080 or socks5h://host:1080. Empty uses $HTTPS_PROXY / $HTTP_PROXY.`)
 	gemProxy   = flag.String("gemini_proxy", config.Env("MARUSYA_GEMINI_PROXY", ""), `Proxy for Gemini only (REST and Live API), overriding -proxy; "direct" connects Gemini without a proxy. Empty uses -proxy.`)
 	noProxy    = flag.String("no_proxy", config.Env("MARUSYA_NO_PROXY", netproxy.DefaultNoProxy), "Comma separated hosts, .domains and CIDR ranges reached without -proxy / -gemini_proxy. Loopback and single-label hosts (Docker services) are always direct.")
+	pluginsDir = flag.String("plugins_dir", config.Env("MARUSYA_PLUGINS_DIR", ""), "Directory of server plugins, one subdirectory with a plugin.json each (see pkg/pluginsdk). Empty disables plugins.")
 	provFile   = flag.String("providers_file", config.Env("MARUSYA_PROVIDERS_FILE", ""), "File that keeps the model providers added in the web panel (with their API keys) across restarts. Empty keeps them in memory.")
 	settings   = flag.String("settings_file", config.Env("MARUSYA_SETTINGS_FILE", ""), "File that keeps the settings changed in the web panel across restarts. Empty keeps them in memory.")
 
@@ -234,6 +235,7 @@ func run() error {
 	cfg := server.Config{
 		Providers:         reg,
 		ProvidersFile:     *provFile,
+		PluginsDir:        *pluginsDir,
 		AuthToken:         *authToken,
 		SystemInstruction: prompt,
 		Language:          *language,
@@ -275,6 +277,7 @@ func run() error {
 		}
 	}
 	srv := server.New(cfg)
+	srv.StartPlugins(ctx)
 	hs := &http.Server{
 		Addr:              *listen,
 		Handler:           srv,

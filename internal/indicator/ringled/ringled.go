@@ -207,7 +207,6 @@ func (r *Ring) Override(req models.RingRequest) (time.Time, error) {
 // ResetOverride returns the ring to the automatic state indicator.
 func (r *Ring) ResetOverride() { r.update(func() { r.manual = nil }) }
 
-
 type look struct {
 	kind   string
 	color  RGB
