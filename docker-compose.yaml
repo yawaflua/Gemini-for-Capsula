@@ -1,0 +1,51 @@
+services:
+  marusya-server:
+    image: ghcr.io/yawaflua/marusya-server:latest
+    container_name: marusya-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: ./server.env
+    environment:
+      MARUSYA_SETTINGS_FILE: /data/settings.json
+      MARUSYA_PROVIDERS_FILE: /data/providers.json
+      MARUSYA_PROFILES_FILE: /data/devices.json
+      MARUSYA_ALARMS_FILE: /data/alarms.json
+      MARUSYA_PLUGINS_DIR: /plugins
+      
+      GEMINI_API_KEY: ${GEMINI_API_KEY:provide Gemini API key first}
+      MARUSYA_AUTH_TOKEN: ${MARUSYA_AUTH_TOKEN:?openssl rand -hex 24}
+      MARUSYA_PANEL_PASSWORD: ${MARUSYA_PANEL_PASSWORD:?openssl rand -hex 24}
+      MARUSYA_LANGUAGE: ru-RU
+      MARUSYA_DEFAULT_LOCATION: Ашдод
+      MARUSYA_DEFAULT_TIMEZONE: Asia/Jerusalem
+      
+      # MARUSYA_WAKE_URL: ws://marusya-wake:2700
+    volumes:
+      - marusya-data:/data
+      - ./plugins:/plugins
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  marusya-wake:
+    image: ghcr.io/yawaflua/marusya-wake:latest
+    container_name: marusya-wake
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: small
+    volumes:
+      - marusya-wake-cache:/cache
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  marusya-data:
+  marusya-wake-cache:
