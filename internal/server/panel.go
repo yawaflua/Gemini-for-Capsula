@@ -146,6 +146,9 @@ func (s *Server) routePanel() {
 	s.mux.HandleFunc("DELETE /panel/api/settings", s.panelAPI(s.handleResetSettings))
 	s.registerProviderAPI()
 	s.registerPluginAPI()
+	if s.cfg.AgentDir != "" {
+		s.mux.HandleFunc("POST /panel/api/install", s.panelAPI(s.handleInstall))
+	}
 }
 
 func securityHeaders(h http.Handler) http.Handler {
@@ -239,8 +242,9 @@ type panelState struct {
 	Started  time.Time    `json:"started"`
 	Tunable  bool         `json:"tunable"`
 	Text     bool         `json:"text"`
-	Saved    bool         `json:"saved"` // settings survive a restart
-	Wake     bool         `json:"wake"`  // the server spots wake words
+	Saved    bool         `json:"saved"`   // settings survive a restart
+	Wake     bool         `json:"wake"`    // the server spots wake words
+	Install  bool         `json:"install"` // speakers can be set up over SSH
 	Settings Settings     `json:"settings"`
 	Defaults Settings     `json:"defaults"`
 	Voices   []string     `json:"voices"`
@@ -270,6 +274,7 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 		Text:     provider.AcceptsText(s.cfg.Provider),
 		Saved:    s.cfg.SettingsFile != "",
 		Wake:     s.cfg.WakeURL != "",
+		Install:  s.cfg.AgentDir != "",
 		Settings: s.Settings(),
 		Defaults: s.defaults,
 		Voices:   panelVoices(s.cfg.Provider),

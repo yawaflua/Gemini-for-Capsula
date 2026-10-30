@@ -155,6 +155,7 @@ async function boot() {
   $("#app").hidden = false;
   document.body.classList.toggle("tunable", st.tunable);
   renderServerLine();
+  renderInstall();
   renderDevices();
   renderHistory();
   renderSettings();
@@ -213,6 +214,7 @@ async function refreshInfo() {
     state.info = st;
     document.body.classList.toggle("tunable", st.tunable);
     renderServerLine();
+  renderInstall();
     renderSettings();
   } catch { /* ignore */ }
 }
@@ -224,6 +226,47 @@ async function refreshSettings() {
     renderSettings();
   } catch { /* ignore */ }
 }
+
+function renderInstall() {
+  $("#install-card").hidden = !state.info.install;
+  const srv = $("#inst-server");
+  const local = /^(localhost|127\.|\[::1\])/.test(location.hostname);
+  srv.placeholder = `ws://<ip-сервера>:${location.port || 8080}/v1/stream`;
+  // A speaker cannot reach this server as localhost.
+  if (!srv.value && !local) srv.value = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/v1/stream`;
+  // Open the form once when there is nothing else to look at.
+  if (!renderInstall.opened && !state.devices.length) $("#install-card").open = true;
+  renderInstall.opened = true;
+}
+
+$("#install-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#install-error"), log = $("#install-log"), status = $("#install-status");
+  err.hidden = log.hidden = true;
+  const body = {
+    host: $("#inst-host").value,
+    password: $("#inst-password").value,
+    server: $("#inst-server").value,
+    user: $("#inst-user").value,
+    port: Number($("#inst-port").value) || 22,
+  };
+  const btn = $("button[type=submit]", e.target);
+  btn.disabled = true;
+  status.textContent = "Устанавливаю… (до минуты: колонка скачивает агента)";
+  status.hidden = false;
+  try {
+    const r = await api("POST", "install", body);
+    $("#inst-password").value = "";
+    status.textContent = `Готово, колонка скоро появится в списке. Ключ SSH колонки: ${r.host_key}`;
+    if (r.output) { log.textContent = r.output; log.hidden = false; }
+  } catch (ex) {
+    status.hidden = true;
+    err.textContent = ex.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 function renderServerLine() {
   const i = state.info;
@@ -441,7 +484,9 @@ function emptyDevices() {
   return el("div", { class: "card empty-state" },
     el("div", { class: "orb" }),
     el("h2", { text: "Нет подключённых колонок" }),
-    el("p", { class: "muted", text: "Колонка подключается сама, когда в /etc/conf.d/marusya-agent указан адрес этого сервера:" }),
+    el("p", { class: "muted", text: state.info.install
+      ? "Добавьте колонку формой ниже или укажите адрес этого сервера в /etc/conf.d/marusya-agent:"
+      : "Колонка подключается сама, когда в /etc/conf.d/marusya-agent указан адрес этого сервера:" }),
     el("pre", { text: `MARUSYA_SERVER=ws://${location.host}/v1/stream\nMARUSYA_AUTH_TOKEN=<тот же, что на сервере>` }));
 }
 

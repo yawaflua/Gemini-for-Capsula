@@ -5,7 +5,10 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    env_file: ./server.env
+    # Optional extra settings (configs/server.env.example lists them all).
+    env_file:
+      - path: ./server.env
+        required: false
     environment:
       MARUSYA_SETTINGS_FILE: /data/settings.json
       MARUSYA_PROVIDERS_FILE: /data/providers.json
@@ -16,9 +19,9 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:?provide Gemini API key first}
       MARUSYA_AUTH_TOKEN: ${MARUSYA_AUTH_TOKEN:?openssl rand -hex 24}
       MARUSYA_PANEL_PASSWORD: ${MARUSYA_PANEL_PASSWORD:?openssl rand -hex 24}
-      MARUSYA_LANGUAGE: ru-RU
-      MARUSYA_DEFAULT_LOCATION: Москва
-      MARUSYA_DEFAULT_TIMEZONE: Asia/Jerusalem
+      MARUSYA_LANGUAGE: ${MARUSYA_LANGUAGE:-ru-RU}
+      MARUSYA_DEFAULT_LOCATION: ${MARUSYA_DEFAULT_LOCATION:-Москва}
+      MARUSYA_DEFAULT_TIMEZONE: ${MARUSYA_DEFAULT_TIMEZONE:-Europe/Moscow}
       
       MARUSYA_WAKE_URL: ws://marusya-wake:2700
     volumes:
