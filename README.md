@@ -58,7 +58,8 @@ docker compose ps        # marusya-server должен стать healthy
 `ws://<ip-сервера>:8080/v1/stream`, нажмите «Установить». Сервер сам поставит на колонку
 сервис, и через несколько секунд она появится в списке. Всё, можно разговаривать.
 Там же можно сразу поставить AirPlay 2 и Spotify (галочки в форме): для Spotify панель
-покажет ссылку для входа в аккаунт.
+покажет ссылку для входа в аккаунт. Чтобы «включи …» искало музыку в Spotify, вставьте ключи
+приложения Spotify в «Настройки» → «Spotify».
 
 Ключевое слово задаётся в панели («Настройки»). Обновление на новую версию:
 
@@ -687,8 +688,11 @@ marusya-ask -server http://192.168.31.80:8080 -token "$MARUSYA_AUTH_TOKEN" -list
 аккаунта, в который залогинен её spotifyd. Нужен Premium.
 
 **На сервере** создайте приложение на
-[developer.spotify.com](https://developer.spotify.com/dashboard) (Web API) и задайте
-в `configs/server.env`:
+[developer.spotify.com](https://developer.spotify.com/dashboard) (Web API) и вставьте его
+Client ID и Client Secret в веб-панели: «Настройки» → «Spotify». Сервер сначала проверит
+ключи у Spotify и только потом сохранит их в `spotify.json` рядом с `MARUSYA_SETTINGS_FILE`
+(в Docker — том `/data`). Там же можно ограничить поиск страной (`RU`, `IL`). Новые ключи
+действуют с нового разговора. Можно и через переменные окружения, ключи из панели важнее:
 
 ```
 MARUSYA_SPOTIFY_CLIENT_ID=…

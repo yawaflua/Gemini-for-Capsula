@@ -202,6 +202,31 @@
         </div>
         <p class="hint">Новые настройки применяются к колонкам, которые сейчас молчат, сразу. Если колонка в этот момент разговаривает, они вступят в силу со следующим вопросом. Контекст текущего разговора при этом забывается.</p>
       </form>
+      <form id="spotify-form" class="card settings" hidden autocomplete="off">
+        <h2>Spotify</h2>
+        <p class="muted">Приложение Spotify, через которое сервер ищет музыку для «включи …». Создайте его на <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a> (Web API) и вставьте ключи. Играет колонка со своего аккаунта: войти в него можно при добавлении колонки.</p>
+        <p class="muted" id="spotify-note"></p>
+        <div class="grid2">
+          <label class="field">
+            <span>Client ID</span>
+            <input id="sp-client-id" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Client Secret</span>
+            <input id="sp-client-secret" type="password" spellcheck="false" autocomplete="new-password">
+          </label>
+          <label class="field">
+            <span>Страна <em>— только музыка, доступная там; пусто = любая</em></span>
+            <input id="sp-market" placeholder="RU" maxlength="2" spellcheck="false">
+          </label>
+        </div>
+        <p id="spotify-error" class="error" hidden></p>
+        <div class="actions">
+          <button class="btn primary" type="submit">Сохранить</button>
+          <button class="btn outlined" type="button" id="spotify-reset" hidden>Вернуть из переменных окружения</button>
+          <span class="saved muted" id="spotify-saved" hidden>Сохранено ✓</span>
+        </div>
+      </form>
     </section>
     <!-- Plugins -->
     <section id="tab-plugins" class="tabpane" hidden>

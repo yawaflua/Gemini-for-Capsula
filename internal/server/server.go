@@ -38,6 +38,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/provider/registry"
 	"github.com/yawaflua/marusya-gemini/internal/skills"
 	"github.com/yawaflua/marusya-gemini/internal/skills/alarm"
+	"github.com/yawaflua/marusya-gemini/internal/skills/spotify"
 	"github.com/yawaflua/marusya-gemini/internal/speech"
 	"github.com/yawaflua/marusya-gemini/internal/transport"
 )
@@ -77,6 +78,9 @@ type Config struct {
 	// GET /v1/agent/{arch}, so speakers with a full read-only flash can
 	// download the agent into RAM on every boot.
 	AgentDir string
+	// Spotify, if set, is the app behind the spotify_play skill (in
+	// Skills too); its credentials can be changed in the web panel.
+	Spotify *spotify.Client
 	// HTTPClient makes the server's own downloads (the AirPlay bundle for
 	// speakers set up from the panel). Nil uses http.DefaultClient.
 	HTTPClient *http.Client
@@ -173,6 +177,10 @@ type Server struct {
 	pluginTools string // names of the plugin tools, see pluginsChanged
 
 	logins spotifyLogins // Spotify sign-ins started from the panel
+
+	spmu         sync.Mutex
+	spotifyEnv   spotifyCreds // as started, see handleResetSpotify
+	spotifyPanel bool         // the credentials were set in the panel
 }
 
 // New creates a server.
@@ -215,6 +223,7 @@ func New(cfg Config) *Server {
 			t.Tune(provider.Tuning{Model: s.settings.Model, Voice: s.settings.Voice})
 		}
 	}
+	s.initSpotify()
 	s.mux.HandleFunc("GET "+transport.Path, s.handleStream)
 	if cfg.AgentDir != "" {
 		s.mux.HandleFunc("GET /v1/agent/{arch}", s.handleAgent)

@@ -73,29 +73,74 @@ type Client struct {
 	API   string
 	Token string
 
-	once sync.Once
-	hc   *http.Client
+	// mu guards the app's credentials, changeable with SetCredentials,
+	// and the HTTP client made for them.
+	mu    sync.Mutex
+	hc    *http.Client
+	hcFor [2]string // the ClientID and ClientSecret of hc
 }
 
-// Skills returns spotify_play.
+// Skills returns spotify_play. It is offered to the model only while the
+// client has credentials, see [Client.Configured].
 func (c *Client) Skills() skills.Set { return skills.Set{playSkill{c}} }
 
-func (c *Client) http() *http.Client {
-	c.once.Do(func() {
-		conf := &clientcredentials.Config{
-			ClientID:     c.ClientID,
-			ClientSecret: c.ClientSecret,
-			TokenURL:     cmp.Or(c.Token, TokenURL),
-			AuthStyle:    oauth2.AuthStyleInHeader,
-		}
+// Configured reports whether the app's credentials are set.
+func (c *Client) Configured() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ClientID != "" && c.ClientSecret != ""
+}
+
+// Credentials returns the app's credentials and the market.
+func (c *Client) Credentials() (id, secret, market string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ClientID, c.ClientSecret, c.Market
+}
+
+// SetCredentials changes the app's credentials and the market, e.g. from
+// the web panel. Searches in progress finish with the old ones.
+func (c *Client) SetCredentials(id, secret, market string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ClientID, c.ClientSecret, c.Market = id, secret, market
+}
+
+// Check asks Spotify for a token with the given credentials, without
+// changing the client.
+func (c *Client) Check(ctx context.Context, id, secret string) error {
+	if c.HTTP != nil {
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, c.HTTP)
+	}
+	_, err := c.tokenConfig(id, secret).Token(ctx)
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) && (re.Response.StatusCode == http.StatusBadRequest || re.Response.StatusCode == http.StatusUnauthorized) {
+		return errors.New("Spotify не принял Client ID или Client Secret")
+	}
+	return err
+}
+
+func (c *Client) tokenConfig(id, secret string) *clientcredentials.Config {
+	return &clientcredentials.Config{
+		ClientID:     id,
+		ClientSecret: secret,
+		TokenURL:     cmp.Or(c.Token, TokenURL),
+		AuthStyle:    oauth2.AuthStyleInHeader,
+	}
+}
+
+func (c *Client) http() (*http.Client, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if key := [2]string{c.ClientID, c.ClientSecret}; c.hc == nil || c.hcFor != key {
 		// The token source outlives any request: refresh with a context of its own.
 		ctx := context.Background()
 		if c.HTTP != nil {
 			ctx = context.WithValue(ctx, oauth2.HTTPClient, c.HTTP)
 		}
-		c.hc = conf.Client(ctx)
-	})
-	return c.hc
+		c.hc, c.hcFor = c.tokenConfig(c.ClientID, c.ClientSecret).Client(ctx), key
+	}
+	return c.hc, c.Market
 }
 
 // Item is a search result.
@@ -134,15 +179,16 @@ func (c *Client) Search(ctx context.Context, q, kind string) (*Item, error) {
 	defer cancel()
 	// Spotify ranks by popularity too, so a few candidates are needed to
 	// find the one that matches; playlists may also come back as nulls.
+	hc, market := c.http()
 	query := url.Values{"q": {q}, "type": {kind}, "limit": {"10"}}
-	if c.Market != "" {
-		query.Set("market", c.Market)
+	if market != "" {
+		query.Set("market", market)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(cmp.Or(c.API, APIURL), "/")+"/search?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http().Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("spotify: %w", err)
 	}
@@ -202,6 +248,9 @@ func normalize(s string) string {
 }
 
 type playSkill struct{ c *Client }
+
+// Available implements [skills.Optional].
+func (s playSkill) Available() bool { return s.c.Configured() }
 
 func (s playSkill) Tool() tools.Tool {
 	return tools.Tool{

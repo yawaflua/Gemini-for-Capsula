@@ -160,6 +160,7 @@ async function boot() {
   document.body.classList.toggle("tunable", st.tunable);
   renderServerLine();
   renderInstall();
+  renderSpotify();
   renderDevices();
   renderHistory();
   renderSettings();
@@ -219,6 +220,7 @@ async function refreshInfo() {
     document.body.classList.toggle("tunable", st.tunable);
     renderServerLine();
   renderInstall();
+  renderSpotify();
     renderSettings();
   } catch { /* ignore */ }
 }
@@ -230,6 +232,54 @@ async function refreshSettings() {
     renderSettings();
   } catch { /* ignore */ }
 }
+
+function renderSpotify() {
+  const sp = state.info.spotify;
+  $("#spotify-form").hidden = !sp;
+  if (!sp) return;
+  // Keep what is being typed when the state refreshes.
+  if (!$("#spotify-form").contains(document.activeElement)) {
+    $("#sp-client-id").value = sp.client_id || "";
+    $("#sp-client-secret").value = "";
+    $("#sp-market").value = sp.market || "";
+  }
+  $("#sp-client-secret").placeholder = sp.secret_set ? "задан — оставьте пустым, чтобы не менять" : "";
+  $("#spotify-reset").hidden = !sp.panel;
+  $("#spotify-reset").textContent = sp.env ? "Вернуть из переменных окружения" : "Отключить Spotify";
+  const on = sp.client_id && sp.secret_set;
+  $("#spotify-note").textContent = (on ? "Поиск в Spotify включён" + (sp.panel ? " (ключи из панели)." : " (ключи из MARUSYA_SPOTIFY_CLIENT_ID)." ) : "Spotify выключен: музыка ищется на YouTube.")
+    + (sp.saved ? "" : " Ключи действуют до перезапуска: задайте MARUSYA_SETTINGS_FILE, чтобы они сохранялись.")
+    + (on ? " Новые ключи действуют с нового разговора." : "");
+}
+
+$("#spotify-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#spotify-error");
+  err.hidden = true;
+  const btn = $("button[type=submit]", e.target);
+  btn.disabled = true;
+  try {
+    state.info.spotify = await api("PUT", "spotify", {
+      client_id: $("#sp-client-id").value,
+      client_secret: $("#sp-client-secret").value,
+      market: $("#sp-market").value,
+    });
+    renderSpotify();
+    const ok = $("#spotify-saved");
+    ok.hidden = false;
+    setTimeout(() => (ok.hidden = true), 2500);
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#spotify-reset").addEventListener("click", async (e) => {
+  const r = await run(e.target, () => api("DELETE", "spotify"));
+  if (r) { state.info.spotify = r; renderSpotify(); }
+});
 
 function renderInstall() {
   $("#install-card").hidden = !state.info.install;

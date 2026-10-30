@@ -146,6 +146,10 @@ func (s *Server) routePanel() {
 	s.mux.HandleFunc("DELETE /panel/api/settings", s.panelAPI(s.handleResetSettings))
 	s.registerProviderAPI()
 	s.registerPluginAPI()
+	if s.cfg.Spotify != nil {
+		s.mux.HandleFunc("PUT /panel/api/spotify", s.panelAPI(s.handleSetSpotify))
+		s.mux.HandleFunc("DELETE /panel/api/spotify", s.panelAPI(s.handleResetSpotify))
+	}
 	if s.cfg.AgentDir != "" {
 		s.mux.HandleFunc("POST /panel/api/install", s.panelAPI(s.handleInstall))
 		s.mux.HandleFunc("POST /panel/api/install/spotify", s.panelAPI(s.handleSpotifyLogin))
@@ -246,6 +250,7 @@ type panelState struct {
 	Saved    bool         `json:"saved"`   // settings survive a restart
 	Wake     bool         `json:"wake"`    // the server spots wake words
 	Install  bool         `json:"install"` // speakers can be set up over SSH
+	Spotify  *spotifyInfo `json:"spotify,omitempty"`
 	Settings Settings     `json:"settings"`
 	Defaults Settings     `json:"defaults"`
 	Voices   []string     `json:"voices"`
@@ -276,6 +281,7 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 		Saved:    s.cfg.SettingsFile != "",
 		Wake:     s.cfg.WakeURL != "",
 		Install:  s.cfg.AgentDir != "",
+		Spotify:  s.spotifyInfo(),
 		Settings: s.Settings(),
 		Defaults: s.defaults,
 		Voices:   panelVoices(s.cfg.Provider),

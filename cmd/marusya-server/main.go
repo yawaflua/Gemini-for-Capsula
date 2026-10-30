@@ -223,12 +223,14 @@ func run() error {
 		set = append(set, ha.Skills()...)
 		log.Info("Home Assistant skills enabled", "url", *haURL, "domains", cmp.Or(*haDomains, strings.Join(homeassistant.DefaultDomains, ",")))
 	}
-	if *spID != "" {
-		sp := &spotify.Client{ClientID: *spID, ClientSecret: *spSecret, Market: *spMarket}
-		if px != nil {
-			sp.HTTP = px.Client(0)
-		}
-		set = append(set, sp.Skills()...)
+	// spotify_play is offered to the model while the app's credentials are
+	// set, here or in the web panel.
+	spc := &spotify.Client{ClientID: *spID, ClientSecret: *spSecret, Market: *spMarket}
+	if px != nil {
+		spc.HTTP = px.Client(0)
+	}
+	set = append(set, spc.Skills()...)
+	if spc.Configured() {
 		log.Info("Spotify skill enabled", "market", cmp.Or(*spMarket, "any"))
 	}
 
@@ -243,6 +245,7 @@ func run() error {
 		IdleTimeout:       *idleTimeout,
 		CommandTimeout:    *cmdTimeout,
 		AgentDir:          *agentDir,
+		Spotify:           spc,
 		Skills:            set,
 		DefaultLocation:   *defLocation,
 		DefaultTimeZone:   *defTimeZone,
