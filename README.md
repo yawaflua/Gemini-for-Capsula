@@ -16,6 +16,59 @@
  └─────────────────────────────────┘            └────────────────────────┘
 ```
 
+## Быстрый старт
+
+Нужен сервер с Docker (amd64 или arm64) в одной сети с колонкой и root по SSH на колонке.
+Готовые образы `ghcr.io/yawaflua/marusya-server` и `ghcr.io/yawaflua/marusya-wake` публичные,
+собирать ничего не надо.
+
+**1. Docker и папка для сервера**
+
+```bash
+curl -fsSL https://get.docker.com | sh
+mkdir -p ~/marusya/plugins && cd ~/marusya
+sudo chown 65532 plugins   # плагины хранят тут своё состояние
+curl -fsSLO https://raw.githubusercontent.com/yawaflua/Gemini-for-Capsula/master/docker-compose.yaml
+```
+
+**2. Ключи в `.env`** (рядом с `docker-compose.yaml`)
+
+```ini
+GEMINI_API_KEY=<ключ из https://aistudio.google.com/apikey>
+MARUSYA_AUTH_TOKEN=<случайная строка: openssl rand -hex 24>
+MARUSYA_PANEL_PASSWORD=<пароль от веб-панели>
+MARUSYA_DEFAULT_LOCATION=Москва
+MARUSYA_DEFAULT_TIMEZONE=Europe/Moscow
+```
+
+Остальные настройки (прокси, Claude, Home Assistant, Spotify...) можно положить в
+`server.env` рядом, их список в [configs/server.env.example](configs/server.env.example).
+
+**3. Запуск**
+
+```bash
+docker compose up -d
+docker compose ps        # marusya-server должен стать healthy
+```
+
+**4. Колонка — из веб-панели**
+
+Откройте `http://<ip-сервера>:8080/panel/` и войдите паролем `MARUSYA_PANEL_PASSWORD`. На вкладке
+«Колонки» → «Добавить колонку» укажите IP колонки, пароль root и адрес сервера
+`ws://<ip-сервера>:8080/v1/stream`, нажмите «Установить». Сервер сам поставит на колонку
+сервис, и через несколько секунд она появится в списке. Всё, можно разговаривать.
+
+Ключевое слово задаётся в панели («Настройки»). Обновление на новую версию:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Колонка берёт новый агент с сервера при следующей перезагрузке. Настройки, профили колонок
+и будильники лежат в томе `marusya-data` и при обновлении сохраняются.
+
+Дальше — подробности: как всё устроено, сборка из исходников, все настройки.
+
 ## Как это работает
 
 1. **Ожидание.** Агент постоянно пишет микрофон (`arecord`, 16 kHz mono) и отдаёт
