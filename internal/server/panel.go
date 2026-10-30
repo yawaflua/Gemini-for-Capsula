@@ -145,6 +145,7 @@ func (s *Server) routePanel() {
 	s.mux.HandleFunc("DELETE /panel/api/alarms/{device}/{id}", s.panelAPI(s.handleDeleteAlarm))
 	s.mux.HandleFunc("DELETE /panel/api/settings", s.panelAPI(s.handleResetSettings))
 	s.registerProviderAPI()
+	s.registerPluginAPI()
 }
 
 func securityHeaders(h http.Handler) http.Handler {

@@ -82,16 +82,21 @@ internal/
     stream/             звук YouTube и радио, который декодирует сервер
   media/                поиск и стриминг звука: интерфейс Source, HTTP-клиент колонки
     ytdlp/              реализация через yt-dlp + ffmpeg (на сервере)
+  plugin/               запуск плагинов: манифесты, процессы, перезапуск, инструменты
   syscmd/               запуск системных утилит (с подменой в тестах)
   config/, logging/     общие хелперы для main
 deploy/                 Dockerfile, docker-compose, OpenRC-сервис для колонки
+pkg/pluginsdk/          протокол плагинов и SDK для Go (jsonrpc/: транспорт)
+sdk/                    SDK плагинов для C++ (один заголовок) и Python
+examples/plugins/       примеры плагинов: coin (Python), dice (Go), speaker-stats (C++ + Python)
 configs/                примеры конфигов (server.env, /etc/conf.d/marusya-agent)
 scripts/wakeword/       пример keyword-spotter на openWakeWord
 ```
 
 Чтобы заменить бэкенд, достаточно реализовать нужный интерфейс:
 `provider.Provider` (другая LLM), `audio.Player`/`audio.Capturer` (другой звук),
-`wakeword.Detector`, `controller.Volume|Media|Bluetooth`.
+`wakeword.Detector`, `controller.Volume|Media|Bluetooth`. Новые функции для модели
+удобнее добавлять плагинами, без пересборки (см. «Плагины»).
 
 ## Сборка
 
@@ -577,6 +582,24 @@ marusya-ask -server http://192.168.31.80:8080 -token "$MARUSYA_AUTH_TOKEN" -list
 
 Код, ссылки и markdown выбрасываются. Ответ передаётся Claude как распознанная речь, с пометкой, что возможны ошибки распознавания.
 
+### AirPlay
+
+Колонка принимает AirPlay 2 с iPhone, iPad и Mac через shairport-sync. Готовая сборка
+для Капсулы Мини (shairport-sync, nqptp, avahi, сервисы OpenRC):
+[ryysel/capsula-mini-airplay2](https://github.com/ryysel/capsula-mini-airplay2).
+Установите её по инструкции оттуда (`install.sh --name "Маруся"`).
+
+Агент сам находит shairport-sync на системной D-Bus (`org.gnome.ShairportSync`), отдельно
+ничего настраивать не нужно. Пока телефон играет на колонку:
+
+- «пауза», «дальше», «что играет» голосом и в панели уходят на телефон, а не в mpv или spotifyd;
+- на время вопроса музыка ставится на паузу и потом продолжается, как и для остальных плееров;
+- если попросить включить что-то другое (YouTube, Spotify), AirPlay ставится на паузу.
+
+Если shairport-sync не запущен или телефон отключился, команды идут обычному плееру.
+Выключить: `MARUSYA_AIRPLAY=false`. Команды доходят до телефона с задержкой около секунды
+(протокол DACP).
+
 ### Spotify
 
 Если Spotify настроен, музыка по умолчанию идёт из него: «Маруся, включи Кино — Группа
@@ -639,6 +662,86 @@ spotifyd 0.4 показывает плеер MPRIS, только пока он �
 (`rs.spotifyd.Controls.TransferPlayback`), и выбирать колонку в приложении не нужно.
 
 Ищутся только публичные плейлисты: личные плейлисты пользователя серверу не видны.
+
+### Плагины
+
+Плагин добавляет модели новые функции и реагирует на события, не требуя пересборки сервера
+или агента. Это отдельная программа в своей папке рядом с файлом `plugin.json`. Сервер или
+агент запускает её и общается с ней по JSON-RPC 2.0 через stdin/stdout, по одному сообщению
+на строку. Писать плагины можно на любом языке; готовые SDK есть для Go
+([pkg/pluginsdk](pkg/pluginsdk)), C++ ([sdk/cpp](sdk/cpp/marusya_plugin.hpp), один заголовок
+без зависимостей) и Python ([sdk/python](sdk/python/marusya_plugin.py), только стандартная
+библиотека). Протокол описан в [sdk/README.md](sdk/README.md).
+
+Плагин может работать в одном из трёх вариантов:
+- **на сервере**: интернет-сервисы, ключи API, общие данные всех колонок;
+- **на колонке**: железо, файлы и процессы колонки (агент собран статически, поэтому
+  плагин для колонки удобнее всего писать на Go или C++ и собирать под `linux/arm64` статически);
+- **в обеих половинах сразу**: половины обмениваются сообщениями через соединение колонки
+  с сервером.
+
+```json
+{
+  "id": "dice",
+  "name": "Кубики",
+  "version": "1.0.0",
+  "description": "Бросает игральные кубики",
+  "server": {"command": ["./dice"]},
+  "agent":  {"command": ["./dice-agent"], "env": {"X": "1"}},
+  "config": {"max_dice": 10}
+}
+```
+
+Включаются плагины каталогом: `MARUSYA_PLUGINS_DIR` (флаг `-plugins_dir`) на сервере и в
+`/etc/conf.d/marusya-agent` на колонке. В каталоге лежит по папке на плагин.
+
+Что умеет плагин:
+- **объявлять функции** для модели. Модель вызывает их как встроенные. Имена, занятые встроенными
+  функциями, отклоняются;
+- **выполнять действия на колонке** (`host.command`): громкость, музыка, кольцо — всё, что
+  есть в `hello.capabilities`;
+- **говорить через колонку** (`host.say`, только на сервере), в том числе с вопросом и ответом,
+  как `/v1/ask`;
+- **получать события**: на сервере `connect`, `disconnect`, `turn`, `command`, `skill`, `wake`;
+  на колонке `state` (`idle`, `listening`, `thinking`, `speaking`...);
+- **писать в лог** сервера или агента (а также через stderr).
+
+Упавший плагин перезапускается с паузой от 1 секунды до минуты. Во вкладке **«Плагины»**
+веб-панели видно состояние каждого плагина и его функции. Там же плагин можно выключить,
+перезапустить и поменять его настройки (поле `config`, хранится в
+`<каталог>/.state.json`). Новые папки подхватываются кнопкой «Найти новые». Функции плагинов
+колонок тоже показаны в панели. Когда у плагина колонки меняется набор функций, агент
+переподключается к серверу и сообщает новый список.
+
+Примеры в [examples/plugins](examples/plugins):
+
+```sh
+# самый простой: «подбрось монетку», Python, собирать не нужно
+cp -r examples/plugins/coin plugins/
+cp sdk/python/marusya_plugin.py plugins/coin/
+# серверный плагин на Go
+go build -o examples/plugins/dice/dice ./examples/plugins/dice
+# двусторонний: колонка на C++, сервер на Python
+make -C examples/plugins/speaker-stats CXX=aarch64-linux-gnu-g++ LDFLAGS=-static
+```
+
+Плагин на Go — обычная программа:
+
+```go
+p := pluginsdk.New()
+p.Tool(pluginsdk.ToolSpec{
+	Name:        "roll_dice",
+	Description: "Rolls dice and returns the values.",
+	Params:      []pluginsdk.Param{{Name: "count", Type: pluginsdk.TypeInteger}},
+}, func(ctx context.Context, c pluginsdk.Call) (any, error) {
+	p.Command(ctx, c.Device.ID, "ring.set", map[string]any{"scene": "rainbow"})
+	return map[string]any{"values": []int{4}}, nil
+})
+log.Fatal(p.Run())
+```
+
+Плагины выполняются с правами сервера или агента (на колонке это root). Ставьте только те
+плагины, которым доверяете.
 
 ### Home Assistant
 
@@ -707,6 +810,7 @@ WebSocket `GET /v1/stream`, авторизация `Authorization: Bearer <token
 | `command` / `command_result` | ← / → | вызов функции модели и результат |
 | `interrupted` / `turn_complete` | ← | ответ прерван / завершён |
 | `error` | ← | ошибка |
+| `plugin` | ↔ | данные между половинами плагина (только при `features: ["plugins"]`) |
 
 Модели передаются только инструменты, которые устройство объявило в `hello.capabilities`.
 Из действий кольца, экрана и датчиков модель получает только `ring_set`; `ring.reset`,

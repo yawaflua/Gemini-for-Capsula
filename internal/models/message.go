@@ -15,6 +15,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -78,6 +79,10 @@ const (
 	TypeAlarms MessageType = "alarms"
 )
 
+// TypePlugin carries data between the two halves of a plugin that runs
+// on both the server and the speaker (see [FeaturePlugins]).
+const TypePlugin MessageType = "plugin"
+
 // Feature names an optional protocol extension supported by the device.
 type Feature string
 
@@ -94,6 +99,10 @@ const FeatureAnnounce Feature = "announce"
 
 // FeatureAlarms means the device understands [TypeAlarms].
 const FeatureAlarms Feature = "alarms"
+
+// FeaturePlugins means the device runs plugins and understands
+// [TypePlugin].
+const FeaturePlugins Feature = "plugins"
 
 // Message is the envelope of every JSON text frame.
 //
@@ -115,6 +124,35 @@ type Message struct {
 	Wake          *Wake          `json:"wake,omitempty"`
 	Announce      *Announce      `json:"announce,omitempty"`
 	Alarms        *Alarms        `json:"alarms,omitempty"`
+	Plugin        *PluginMessage `json:"plugin,omitempty"`
+}
+
+// PluginMessage is the payload of [TypePlugin]: Data for the other half of
+// Plugin.
+type PluginMessage struct {
+	Plugin string          `json:"plugin"`
+	Data   json.RawMessage `json:"data"`
+}
+
+// PluginTool is a function of a plugin running on the speaker. The server
+// offers it to the model; a call comes back as a [Command] whose action is
+// the tool name.
+type PluginTool struct {
+	Plugin      string        `json:"plugin"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Params      []PluginParam `json:"params,omitempty"`
+}
+
+// PluginParam is an argument of a [PluginTool].
+type PluginParam struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Required    bool     `json:"required,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+	Minimum     *float64 `json:"minimum,omitempty"`
+	Maximum     *float64 `json:"maximum,omitempty"`
 }
 
 // Alarms is the payload of [TypeAlarms].
@@ -174,6 +212,8 @@ type Hello struct {
 	TimeZone string `json:"timezone,omitempty"`
 	// Features lists the optional protocol extensions the device supports.
 	Features []Feature `json:"features,omitempty"`
+	// PluginTools are the functions of the plugins on the speaker.
+	PluginTools []PluginTool `json:"plugin_tools,omitempty"`
 }
 
 // Ready is sent by the server once the device is accepted.
@@ -252,6 +292,8 @@ func (m *Message) Validate() error {
 		ok = m.Announce != nil
 	case TypeAlarms:
 		ok = m.Alarms != nil
+	case TypePlugin:
+		ok = m.Plugin != nil && m.Plugin.Plugin != ""
 	case TypeTurnStart, TypeTurnEnd, TypeTurnCancel, TypeInterrupted, TypeTurnComplete, TypeListenEnd, TypeRemoteTurn:
 		ok = true
 	default:

@@ -433,3 +433,11 @@ body:not(.tunable) .tunable { display: none; }
 .surface-range { margin-top: 12px; }
 .surface select { width: auto; }
 .surface .facts { border-top: 1px solid var(--md-outline-variant); padding-top: 16px; }
+
+.plugin-errors { margin: 8px 0 0; padding-left: 20px; }
+.plugin .tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.plugin .tools code { font-size: 12px; }
+.plugin-config { flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px; }
+.plugin-config textarea { font: 13px/20px "Roboto Mono", ui-monospace, Menlo, monospace; min-height: 120px; }
+.badge.failed { background: var(--md-error-container, rgba(220,50,50,.15)); color: var(--md-error); }
+.badge.off { background: var(--md-surface-container-highest); color: var(--md-on-surface-variant); }

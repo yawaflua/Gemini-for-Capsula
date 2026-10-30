@@ -159,6 +159,7 @@ async function boot() {
   renderHistory();
   renderSettings();
   await loadProviders().catch(() => {});
+  await loadPlugins().catch(() => {});
   connectEvents();
   let tab = "devices";
   try { tab = localStorage.getItem("marusya-tab") || tab; } catch { /* private mode */ }
@@ -199,6 +200,7 @@ function connectEvents() {
     // Settings changed in another tab: reload them unless being edited here.
     if (ev.kind === "settings" && $("#tab-settings").hidden) refreshSettings();
     if (ev.kind === "provider") { refreshInfo(); loadProviders().catch(() => {}); }
+    if (["plugins", "connect", "disconnect"].includes(ev.kind)) loadPlugins().catch(() => {});
   });
 }
 
@@ -327,7 +329,9 @@ function renderDetail() {
   mute.classList.toggle("on", !!live.muted);
   f(box, "light-on").checked = !!live.light;
   if (live.media) {
-    f(box, "now").textContent = live.media.playing ? `▶ ${live.media.title || "играет"}` : "Ничего не играет";
+    const via = live.media.source === "airplay" ? " · AirPlay" : "";
+    f(box, "now").textContent = live.media.playing ? `▶ ${live.media.title || "играет"}${via}`
+      : live.media.source === "airplay" ? `⏸ ${live.media.title || "AirPlay на паузе"}${via}` : "Ничего не играет";
   }
   renderBT(box, d.session, live.bt);
   renderSurface(box, live.surface);
@@ -993,6 +997,115 @@ $("#prov-form").addEventListener("submit", async (e) => {
     btn.disabled = false;
   }
 });
+
+// ---------- plugins ----------
+
+const pluginStates = {
+  running: ["idle", "работает"],
+  starting: ["thinking", "запускается"],
+  failed: ["failed", "упал, перезапуск"],
+  disabled: ["off", "выключен"],
+  stopped: ["off", "остановлен"],
+};
+
+async function loadPlugins() {
+  const p = await api("GET", "plugins");
+  state.plugins = p;
+  // Do not redraw under an open configuration editor.
+  if (!$("#plugins-list .plugin-config")) renderPlugins();
+  renderDevicePlugins();
+}
+
+function renderPlugins() {
+  const p = state.plugins;
+  $("#plugins-note").textContent = p.enabled
+    ? `Каталог ${p.dir}: в нём по папке на плагин с файлом plugin.json. Плагины работают отдельными процессами и общаются с сервером по JSON-RPC (SDK для Go, C++ и Python).`
+    : "Плагины выключены. Чтобы включить, задайте каталог MARUSYA_PLUGINS_DIR (флаг -plugins_dir) и перезапустите сервер.";
+  $("#plugins-rescan").hidden = !p.enabled;
+  const errs = $("#plugins-errors");
+  errs.replaceChildren(...p.errors.map((e) => el("li", { text: e })));
+  errs.hidden = !p.errors.length;
+  const list = $("#plugins-list");
+  list.replaceChildren();
+  if (p.enabled && !p.plugins.length) list.append(el("li", { class: "muted", text: "Серверных плагинов пока нет." }));
+  for (const v of p.plugins) {
+    const [cls, label] = pluginStates[v.state] || ["off", v.state];
+    const sides = v.sides.map((s) => (s === "server" ? "сервер" : "колонка")).join(" + ");
+    const meta = [v.id, v.version && "v" + v.version, sides, v.restarts ? `перезапусков: ${v.restarts}` : ""].filter(Boolean).join(" · ");
+    const actions = el("div", { class: "row" },
+      el("span", { class: "badge " + cls, text: label }),
+      el("button", { class: "btn text small", type: "button", text: v.enabled ? "Выключить" : "Включить",
+        onclick: (e) => pluginAction(e.target, `plugins/${encodeURIComponent(v.id)}/enabled`, { enabled: !v.enabled }, v.enabled ? "Плагин выключен" : "Плагин включён") }),
+      v.enabled ? el("button", { class: "btn text small", type: "button", text: "Перезапустить",
+        onclick: (e) => pluginAction(e.target, `plugins/${encodeURIComponent(v.id)}/restart`, {}, "Плагин перезапущен") }) : null,
+      el("button", { class: "btn text small", type: "button", text: "Настройки", onclick: (e) => editPluginConfig(e.target.closest("li"), v) }));
+    list.append(el("li", { class: "prov plugin" },
+      el("div", { class: "prov-main" },
+        el("b", { text: v.name || v.id }),
+        el("small", { text: meta }),
+        v.description ? el("small", { text: v.description }) : null,
+        v.error ? el("small", { class: "error", text: v.error }) : null,
+        v.tools.length ? el("div", { class: "tools" }, ...v.tools.map((t) => el("code", { text: t }))) : null),
+      actions));
+  }
+}
+
+function renderDevicePlugins() {
+  const list = $("#plugins-devices");
+  list.replaceChildren();
+  const devs = state.plugins?.devices || [];
+  if (!devs.length) list.append(el("li", { class: "muted", text: "Нет подключённых колонок." }));
+  for (const d of devs) {
+    let body;
+    if (!d.plugins) body = el("small", { text: "агент без плагинов: каталог не задан или агент устарел" });
+    else if (!d.tools.length) body = el("small", { text: "плагины не объявили функций" });
+    else body = el("div", { class: "tools" }, ...d.tools.map((t) => el("code", { text: `${t.plugin}: ${t.name}`, title: t.description })));
+    list.append(el("li", { class: "prov plugin" }, el("div", { class: "prov-main" }, el("b", { text: d.device }), body)));
+  }
+}
+
+async function pluginAction(btn, path, body, okMsg) {
+  const r = await run(btn, () => api("POST", path, body), okMsg);
+  if (r) { state.plugins = r; renderPlugins(); renderDevicePlugins(); }
+}
+
+function editPluginConfig(li, v) {
+  if ($(".plugin-config", li)) return;
+  const area = el("textarea", { spellcheck: "false", rows: 6 });
+  area.value = v.config ? JSON.stringify(v.config, null, 2) : "{}";
+  const err = el("p", { class: "error", hidden: true });
+  const close = () => { box.remove(); renderPlugins(); };
+  const save = async (btn, value) => {
+    err.hidden = true;
+    let cfg = null;
+    if (value !== null) {
+      try { cfg = JSON.parse(value); } catch (ex) { err.textContent = "Неверный JSON: " + ex.message; err.hidden = false; return; }
+    }
+    btn.disabled = true;
+    try {
+      state.plugins = await api("PUT", `plugins/${encodeURIComponent(v.id)}/config`, cfg);
+      toast("Настройки сохранены, плагин перезапущен");
+      close();
+      renderDevicePlugins();
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  const box = el("div", { class: "plugin-config" },
+    el("small", { class: "muted", text: "Настройки передаются плагину при запуске (поле config). Сохраняются на сервере." }),
+    area, err,
+    el("div", { class: "row" },
+      el("button", { class: "btn primary small", type: "button", text: "Сохранить", onclick: (e) => save(e.target, area.value) }),
+      el("button", { class: "btn text small", type: "button", text: "Как в plugin.json", onclick: (e) => save(e.target, null) }),
+      el("button", { class: "btn text small", type: "button", text: "Отмена", onclick: close })));
+  li.append(box);
+  area.focus();
+}
+
+$("#plugins-rescan").addEventListener("click", (e) => pluginAction(e.target, "plugins/rescan", {}, "Каталог плагинов перечитан"));
 
 // Refresh relative times.
 setInterval(() => { if (!$("#app").hidden) renderDetail(); }, 30000);

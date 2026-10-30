@@ -167,11 +167,18 @@ func (v VolumeState) Map() map[string]any {
 type MediaStatus struct {
 	Playing bool   `json:"playing"`
 	Title   string `json:"title,omitempty"`
+	// Source is where the music comes from when it is not the speaker's
+	// own player, e.g. "airplay".
+	Source string `json:"source,omitempty"`
 }
 
 // Map converts the status into a generic result payload.
 func (s MediaStatus) Map() map[string]any {
-	return map[string]any{"playing": s.Playing, "title": s.Title}
+	m := map[string]any{"playing": s.Playing, "title": s.Title}
+	if s.Source != "" {
+		m["source"] = s.Source
+	}
+	return m
 }
 
 // BluetoothDevice is a remote Bluetooth device known to the speaker.

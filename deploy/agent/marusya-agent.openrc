@@ -27,8 +27,8 @@ extra_started_commands="wake"
 description_wake="Activate the assistant without the wake word (sends SIGUSR1)."
 
 depend() {
-	use net alsa bluetooth dns dbus
-	after net-online bluetooth dbus
+	use net alsa bluetooth dns dbus shairport-sync
+	after net-online bluetooth dbus shairport-sync
 }
 
 agent_url() {

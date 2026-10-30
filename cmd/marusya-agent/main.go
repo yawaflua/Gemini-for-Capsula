@@ -43,6 +43,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/audio/alsa"
 	"github.com/yawaflua/marusya-gemini/internal/config"
 	"github.com/yawaflua/marusya-gemini/internal/controller"
+	"github.com/yawaflua/marusya-gemini/internal/controller/airplay"
 	"github.com/yawaflua/marusya-gemini/internal/controller/amixer"
 	"github.com/yawaflua/marusya-gemini/internal/controller/bluez"
 	"github.com/yawaflua/marusya-gemini/internal/controller/mpv"
@@ -65,6 +66,7 @@ import (
 	wwbutton "github.com/yawaflua/marusya-gemini/internal/wakeword/button"
 	wwexec "github.com/yawaflua/marusya-gemini/internal/wakeword/exec"
 	wwsignal "github.com/yawaflua/marusya-gemini/internal/wakeword/signal"
+	"github.com/yawaflua/marusya-gemini/pkg/pluginsdk"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -101,6 +103,8 @@ var (
 	followUp      = flag.Bool("follow_up", true, "Listen for a follow-up question after each reply without the wake word.")
 	serverStreams = flag.Bool("server_streams", config.EnvBool("MARUSYA_SERVER_STREAMS", true), "Play YouTube and other http(s) streams decoded by the server (it needs yt-dlp and ffmpeg).")
 	duckMedia     = flag.Bool("duck_media", true, "Pause music while the assistant is active.")
+	pluginsDir    = flag.String("plugins_dir", config.Env("MARUSYA_PLUGINS_DIR", ""), "Directory of plugins that run on the speaker, one subdirectory with a plugin.json each (see pkg/pluginsdk). Empty disables plugins.")
+	airplayOn     = flag.Bool("airplay", config.EnvBool("MARUSYA_AIRPLAY", true), "Control AirPlay music played to the speaker (shairport-sync on the system D-Bus): pause, next track, status and ducking go to the phone while it plays.")
 
 	vadThreshold = flag.Float64("vad_threshold_db", vad.DefaultConfig().ThresholdDB, "Speech threshold above the noise floor, dB.")
 	vadSilence   = flag.Duration("vad_silence", vad.DefaultConfig().SilenceEnd, "Trailing silence that ends an utterance.")
@@ -360,10 +364,30 @@ func run() error {
 			log.Info("server streams (YouTube, radio)", "endpoint", ep)
 		}
 	}
+	if *airplayOn {
+		// Outermost: while a phone plays to the speaker, it owns the music.
+		dispatcher.Media = airplay.Wrap(dispatcher.Media, log)
+	}
 	vadCfg := vad.DefaultConfig()
 	vadCfg.ThresholdDB = *vadThreshold
 	vadCfg.SilenceEnd = *vadSilence
 
+	var plugins *speakerPlugins
+	if *pluginsDir != "" {
+		plugins = newSpeakerPlugins(*pluginsDir, pluginsdk.Device{ID: id, Language: *language, Location: *location, TimeZone: *timezone}, dispatcher, log)
+		indicators = append(indicators, plugins)
+	}
+	deps := agent.Deps{
+		Capture:    alsa.NewCapture(alsaCfg, models.DeviceInputFormat),
+		Player:     player,
+		Detector:   detectors,
+		Dispatcher: dispatcher,
+		Indicator:  indicators,
+		Logs:       fwd.Records(),
+	}
+	if plugins != nil {
+		deps.Plugins = plugins
+	}
 	a := agent.New(agent.Config{
 		DeviceID:  id,
 		ServerURL: *serverURL,
@@ -375,14 +399,11 @@ func run() error {
 		Earcons:   *earcons,
 		FollowUp:  *followUp,
 		DuckMedia: *duckMedia,
-	}, log, agent.Deps{
-		Capture:    alsa.NewCapture(alsaCfg, models.DeviceInputFormat),
-		Player:     player,
-		Detector:   detectors,
-		Dispatcher: dispatcher,
-		Indicator:  indicators,
-		Logs:       fwd.Records(),
-	})
+	}, log, deps)
+	if plugins != nil {
+		plugins.start(ctx, a)
+		log.Info("plugins", "dir", *pluginsDir, "tools", len(plugins.Tools()))
+	}
 	if streams != nil {
 		streams.Hold = a.Busy
 		defer streams.Stop()

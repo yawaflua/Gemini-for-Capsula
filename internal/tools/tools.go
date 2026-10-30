@@ -32,6 +32,7 @@ type Type string
 const (
 	TypeString  Type = "string"
 	TypeInteger Type = "integer"
+	TypeNumber  Type = "number"
 	TypeBoolean Type = "boolean"
 )
 

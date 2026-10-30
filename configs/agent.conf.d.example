@@ -31,6 +31,10 @@ MARUSYA_MPV_SOCKET=/tmp/mpv.sock
 # ru.marusya.Agent (needs /etc/dbus-1/system.d/ru.marusya.Agent.conf).
 MARUSYA_DBUS=true
 
+# Plugins that run on the speaker: one directory per plugin with a
+# plugin.json (see sdk/README.md). Empty disables them.
+MARUSYA_PLUGINS_DIR=
+
 MARUSYA_AGENT_DIR=/tmp/marusya
 MARUSYA_AGENT_ARCH=arm64
 

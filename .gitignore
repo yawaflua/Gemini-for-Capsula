@@ -2,3 +2,6 @@
 *.env
 !configs/*.example
 /scratch-*
+
+# Server plugins mounted by deploy/server/docker-compose.yaml.
+/plugins/

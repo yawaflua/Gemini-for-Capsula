@@ -33,6 +33,7 @@ import (
 
 	"github.com/yawaflua/marusya-gemini/internal/alarms"
 	"github.com/yawaflua/marusya-gemini/internal/media"
+	"github.com/yawaflua/marusya-gemini/internal/plugin"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
 	"github.com/yawaflua/marusya-gemini/internal/provider/registry"
 	"github.com/yawaflua/marusya-gemini/internal/skills"
@@ -116,6 +117,10 @@ type Config struct {
 	Providers *registry.Registry
 	// ProvidersFile is where Providers are kept, shown in the panel.
 	ProvidersFile string
+	// PluginsDir holds the server plugins, one directory each with a
+	// plugin.json (see pkg/pluginsdk); empty disables plugins. Call
+	// [Server.StartPlugins] to run them.
+	PluginsDir string
 	// Version is shown in the web panel.
 	Version string
 	// Logger receives structured logs.
@@ -159,6 +164,10 @@ type Server struct {
 
 	pmu      sync.RWMutex
 	profiles map[string]Profile // by device ID
+
+	plugins     *plugin.Manager // nil without PluginsDir
+	plmu        sync.Mutex
+	pluginTools string // names of the plugin tools, see pluginsChanged
 }
 
 // New creates a server.
@@ -188,6 +197,7 @@ func New(cfg Config) *Server {
 	s.alarms = store
 	store.OnChange = s.alarmsChanged
 	s.cfg.Skills = append(slices.Clone(cfg.Skills), alarm.Skills(store)...)
+	s.plugins = s.newPlugins()
 	s.defaults = cfg.defaultSettings()
 	s.settings = s.defaults
 	if cfg.SettingsFile != "" {
