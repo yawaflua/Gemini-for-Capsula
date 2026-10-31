@@ -83,6 +83,14 @@ const (
 // on both the server and the speaker (see [FeaturePlugins]).
 const TypePlugin MessageType = "plugin"
 
+// TypeCatalogPlugins gives the device the complete list of plugins from
+// the plugin catalog it should run, replacing the previous one. The device
+// downloads the missing or changed ones from the server, checks their
+// SHA-512 and removes the catalog plugins that are not in the list. Sent
+// on connect and on every change, only to devices announcing
+// [FeatureCatalogPlugins].
+const TypeCatalogPlugins MessageType = "catalog_plugins"
+
 // Feature names an optional protocol extension supported by the device.
 type Feature string
 
@@ -103,6 +111,10 @@ const FeatureAlarms Feature = "alarms"
 // FeaturePlugins means the device runs plugins and understands
 // [TypePlugin].
 const FeaturePlugins Feature = "plugins"
+
+// FeatureCatalogPlugins means the device installs plugins from the plugin
+// catalog through the server and understands [TypeCatalogPlugins].
+const FeatureCatalogPlugins Feature = "catalog_plugins"
 
 // Message is the envelope of every JSON text frame.
 //
@@ -125,6 +137,28 @@ type Message struct {
 	Announce      *Announce      `json:"announce,omitempty"`
 	Alarms        *Alarms        `json:"alarms,omitempty"`
 	Plugin        *PluginMessage `json:"plugin,omitempty"`
+
+	CatalogPlugins *CatalogPlugins `json:"catalog_plugins,omitempty"`
+}
+
+// CatalogPlugins is the payload of [TypeCatalogPlugins].
+type CatalogPlugins struct {
+	Plugins []CatalogPlugin `json:"plugins"`
+}
+
+// CatalogPlugin is a plugin from the plugin catalog for the speaker.
+type CatalogPlugin struct {
+	// ID is the plugin id, the name of its directory on the speaker.
+	ID      string `json:"id"`
+	Version string `json:"version,omitempty"`
+	// SHA512 is the hex SHA-512 of the ZIP archive of the plugin.
+	SHA512 string `json:"sha512"`
+	// Path is where the server serves the archive, e.g. /v1/plugins/hello,
+	// with the token of the device.
+	Path string `json:"path"`
+	// ProjectID and Catalog say where the plugin came from.
+	ProjectID string `json:"project_id,omitempty"`
+	Catalog   string `json:"catalog,omitempty"`
 }
 
 // PluginMessage is the payload of [TypePlugin]: Data for the other half of
@@ -294,6 +328,8 @@ func (m *Message) Validate() error {
 		ok = m.Alarms != nil
 	case TypePlugin:
 		ok = m.Plugin != nil && m.Plugin.Plugin != ""
+	case TypeCatalogPlugins:
+		ok = m.CatalogPlugins != nil
 	case TypeTurnStart, TypeTurnEnd, TypeTurnCancel, TypeInterrupted, TypeTurnComplete, TypeListenEnd, TypeRemoteTurn:
 		ok = true
 	default:

@@ -97,6 +97,10 @@ func (p *speakerPlugins) changed() {
 // Tools implements [agent.Plugins].
 func (p *speakerPlugins) Tools() []models.PluginTool { return plugin.Announce(p.m.Tools()) }
 
+// Rescan rereads the plugins directory after the agent installed or
+// removed a plugin from the catalog.
+func (p *speakerPlugins) Rescan() { p.m.Rescan() }
+
 // Call implements [agent.Plugins].
 func (p *speakerPlugins) Call(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
 	return p.m.Call(ctx, name, args, p.dev)

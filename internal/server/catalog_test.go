@@ -31,6 +31,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yawaflua/marusya-gemini/internal/plugin"
 )
 
 // fakeCatalog serves one project of the plugin catalog API.
@@ -135,7 +137,7 @@ func TestCatalogInstallUpdateRemove(t *testing.T) {
 	if err != nil || st.Mode().Perm()&0o100 == 0 {
 		t.Fatalf("run.sh = %v %v, want an executable", st, err)
 	}
-	mark, ok := readCatalogMark(filepath.Join(root, "hello"))
+	mark, ok := plugin.ReadCatalogMark(filepath.Join(root, "hello"))
 	sum := sha512.Sum512(cat.archive)
 	if !ok || mark.Version != "1.0.0" || mark.SHA512 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("mark = %+v %v", mark, ok)

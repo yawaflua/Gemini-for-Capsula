@@ -147,6 +147,7 @@ func (s *Server) routePanel() {
 	s.registerProviderAPI()
 	s.registerPluginAPI()
 	s.registerCatalogAPI()
+	s.registerSpeakerCatalogAPI()
 	if s.cfg.Spotify != nil {
 		s.mux.HandleFunc("PUT /panel/api/spotify", s.panelAPI(s.handleSetSpotify))
 		s.mux.HandleFunc("DELETE /panel/api/spotify", s.panelAPI(s.handleResetSpotify))

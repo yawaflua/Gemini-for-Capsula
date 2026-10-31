@@ -357,13 +357,17 @@ type pluginsState struct {
 	// Catalog is the address of the plugin catalog, empty if off.
 	Catalog string `json:"catalog,omitempty"`
 	// FromCatalog lists the plugins installed from the catalog, by id.
-	FromCatalog map[string]catalogInstall `json:"from_catalog"`
+	FromCatalog map[string]plugin.CatalogInstall `json:"from_catalog"`
 }
 
 type devicePlugins struct {
 	Device  string              `json:"device"`
 	Plugins bool                `json:"plugins"` // the agent runs plugins
 	Tools   []models.PluginTool `json:"tools"`
+	// Catalog means the agent installs plugins from the catalog.
+	Catalog bool `json:"catalog"`
+	// FromCatalog are the catalog plugins the speaker should run.
+	FromCatalog []models.CatalogPlugin `json:"from_catalog"`
 }
 
 func (s *Server) pluginsState() pluginsState {
@@ -382,7 +386,9 @@ func (s *Server) pluginsState() pluginsState {
 	for _, d := range s.sessions() {
 		dp := devicePlugins{
 			Device: d.hello.DeviceID, Plugins: d.supportsFeature(models.FeaturePlugins),
-			Tools: append([]models.PluginTool{}, d.hello.PluginTools...),
+			Tools:       append([]models.PluginTool{}, d.hello.PluginTools...),
+			Catalog:     d.supportsFeature(models.FeatureCatalogPlugins),
+			FromCatalog: s.catalogPluginsFor(d.hello.DeviceID),
 		}
 		st.Devices = append(st.Devices, dp)
 	}

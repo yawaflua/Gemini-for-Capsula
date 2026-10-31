@@ -420,6 +420,9 @@ func (s *session) onMessage(ctx context.Context, m *models.Message) {
 	case models.TypePlugin:
 		s.onPluginMessage(m.Plugin)
 
+	case models.TypeCatalogPlugins:
+		s.a.onCatalogPlugins(ctx, m.CatalogPlugins)
+
 	case models.TypeInterrupted:
 		s.stopPlayback()
 

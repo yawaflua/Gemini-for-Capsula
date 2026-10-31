@@ -80,6 +80,9 @@ func (a *Agent) features() []models.Feature {
 	if a.plugins != nil {
 		fs = append(fs, models.FeaturePlugins)
 	}
+	if a.catalogEnabled() {
+		fs = append(fs, models.FeatureCatalogPlugins)
+	}
 	return fs
 }
 

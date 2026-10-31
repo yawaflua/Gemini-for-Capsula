@@ -239,6 +239,9 @@ func New(cfg Config) *Server {
 	if cfg.AgentDir != "" {
 		s.mux.HandleFunc("GET /v1/agent/{arch}", s.handleAgent)
 	}
+	if cfg.PluginsDir != "" {
+		s.mux.HandleFunc("GET /v1/plugins/{id}", s.handleSpeakerPlugin)
+	}
 	s.mux.HandleFunc("POST /v1/ask", s.handleAsk)
 	s.mux.HandleFunc("GET "+media.Path, s.handleMedia)
 	s.mux.HandleFunc(PluginHTTPPrefix+"{id}/{path...}", s.handlePluginHTTP)

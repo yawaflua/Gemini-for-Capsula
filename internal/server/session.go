@@ -190,6 +190,7 @@ func (d *deviceSession) run(ctx context.Context) error {
 	if d.supportsFeature(models.FeatureAlarms) {
 		go d.runAlarms()
 	}
+	go d.pushCatalogPlugins()
 
 	for {
 		f, err := d.conn.Read(ctx)

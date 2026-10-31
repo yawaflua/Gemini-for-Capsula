@@ -1230,7 +1230,11 @@ function renderDevicePlugins() {
     if (!d.plugins) body = el("small", { text: "агент без плагинов: каталог не задан или агент устарел" });
     else if (!d.tools.length) body = el("small", { text: "плагины не объявили функций" });
     else body = el("div", { class: "tools" }, ...d.tools.map((t) => el("code", { text: `${t.plugin}: ${t.name}`, title: t.description })));
-    list.append(el("li", { class: "prov plugin" }, el("div", { class: "prov-main" }, el("b", { text: d.device }), body)));
+    const fromCatalog = (d.from_catalog || []).map((p) => el("div", { class: "row catalog-speaker" },
+      el("small", { text: `из каталога: ${p.id}${p.version ? " v" + p.version : ""}` }),
+      el("button", { class: "btn text small", type: "button", text: "Удалить",
+        onclick: (e) => removeSpeakerPlugin(e.target, d.device, p.id) })));
+    list.append(el("li", { class: "prov plugin" }, el("div", { class: "prov-main" }, el("b", { text: d.device }), body, ...fromCatalog)));
   }
 }
 
@@ -1289,9 +1293,10 @@ function renderCatalogNote() {
   note.replaceChildren("Плагины из ",
     el("a", { href: p.catalog, target: "_blank", rel: "noreferrer", text: p.catalog.replace(/^https?:\/\//, "") }),
     p.enabled
-      ? ". Сервер скачивает архив, сверяет его SHA-512 с тем, что прислал каталог, и ставит плагин в свой каталог плагинов."
+      ? ". Сервер скачивает архив, сверяет его SHA-512 с тем, что прислал каталог, и ставит плагин в свой каталог плагинов. Половину для колонки сервер раздаёт колонкам, которые вы выберете."
       : ". Чтобы ставить плагины, задайте каталог MARUSYA_PLUGINS_DIR.");
   if (!state.catalog) searchCatalog().catch(() => {});
+  else renderCatalog(); // the speakers may have changed
 }
 
 async function searchCatalog(btn) {
@@ -1321,7 +1326,7 @@ function renderCatalog() {
     const meta = [v.slug, v.latest_version && "v" + v.latest_version, catalogEnv[v.environment]].filter(Boolean).join(" · ");
     let action;
     if (!v.latest_version) action = el("span", { class: "badge off", text: "нет версий" });
-    else if (v.environment === "agent") action = el("span", { class: "badge off", title: "Половину для колонки кладут в каталог плагинов агента на колонке", text: "только для колонки" });
+    else if (v.environment === "agent") action = el("span", { class: "badge off", title: "Ставится на колонки кнопками ниже", text: "только для колонки" });
     else if (v.installed && v.installed === v.latest_version) action = el("span", { class: "badge idle", text: "установлен" });
     else if (canInstall) action = el("button", { class: "btn tonal small", type: "button",
       text: v.installed ? `Обновить с v${v.installed}` : "Установить",
@@ -1331,7 +1336,7 @@ function renderCatalog() {
         el("b", { text: v.name || v.slug }),
         el("small", { text: meta }),
         v.description ? el("small", { text: v.description }) : null,
-        v.environment === "both" ? el("small", { class: "muted", text: "Половину для колонки нужно поставить на колонку отдельно." }) : null),
+        v.latest_version && v.environment !== "server" ? speakerButtons(v) : null),
       el("div", { class: "row" },
         action || null,
         el("a", { class: "btn text small", href: v.url, target: "_blank", rel: "noreferrer", text: "Страница" }))));
@@ -1343,6 +1348,43 @@ async function installCatalogPlugin(btn, v) {
   const r = await run(btn, () => api("POST", "catalog/install", { project_id: v.id }), `Плагин «${v.name || v.slug}» установлен`);
   if (r) { state.plugins = r; renderPlugins(); renderDevicePlugins(); }
   await searchCatalog().catch(() => {});
+}
+
+// speakerButtons installs the speaker half of a catalog plugin on each
+// connected speaker whose agent can do it.
+function speakerButtons(v) {
+  const devs = state.plugins?.devices || [];
+  if (!devs.length) return el("small", { class: "muted", text: "Половина для колонки: подключите колонку, чтобы поставить её." });
+  const box = el("div", { class: "row catalog-speakers" }, el("small", { text: "На колонку:" }));
+  for (const d of devs) {
+    const have = v.speakers?.[d.device];
+    if (!d.catalog) box.append(el("span", { class: "badge off", title: "Обновите агент на колонке", text: `${d.device}: агент устарел` }));
+    else if (have && have === v.latest_version) box.append(el("span", { class: "badge idle", text: `${d.device}: стоит` }));
+    else box.append(el("button", { class: "btn tonal small", type: "button",
+      text: have ? `${d.device}: обновить с v${have}` : d.device,
+      onclick: (e) => installSpeakerPlugin(e.target, v, d.device) }));
+  }
+  return box;
+}
+
+async function installSpeakerPlugin(btn, v, device) {
+  btn.textContent = "Скачиваем…";
+  const r = await run(btn, () => api("POST", `catalog/speakers/${encodeURIComponent(device)}`, { project_id: v.id }),
+    `Плагин «${v.name || v.slug}» отправлен на колонку ${device}`);
+  if (r) { state.plugins = r; renderPlugins(); renderDevicePlugins(); }
+  await searchCatalog().catch(() => {});
+}
+
+async function removeSpeakerPlugin(btn, device, id) {
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "Точно удалить?";
+    setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Удалить"; }, 4000);
+    return;
+  }
+  const r = await run(btn, () => api("DELETE", `catalog/speakers/${encodeURIComponent(device)}/${encodeURIComponent(id)}`), "Плагин удалён с колонки");
+  if (r) { state.plugins = r; renderPlugins(); renderDevicePlugins(); }
+  if (state.catalog) await searchCatalog().catch(() => {});
 }
 
 // Two-step delete instead of confirm(), which may be blocked.
