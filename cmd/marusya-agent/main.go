@@ -51,6 +51,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/controller/mpv"
 	"github.com/yawaflua/marusya-gemini/internal/controller/playerctl"
 	"github.com/yawaflua/marusya-gemini/internal/controller/stream"
+	"github.com/yawaflua/marusya-gemini/internal/controller/volumecmd"
 	"github.com/yawaflua/marusya-gemini/internal/dbusapi"
 	"github.com/yawaflua/marusya-gemini/internal/display/seg7"
 	"github.com/yawaflua/marusya-gemini/internal/evdev"
@@ -93,6 +94,7 @@ var (
 
 	mixerCard    = flag.String("mixer_card", config.Env("MARUSYA_MIXER_CARD", ""), "ALSA card for volume control.")
 	mixerControl = flag.String("mixer_control", config.Env("MARUSYA_MIXER_CONTROL", "Master"), "ALSA simple mixer control for volume. Empty disables volume control.")
+	volumeCmd    = flag.String("volume_cmd", config.Env("MARUSYA_VOLUME_CMD", ""), "External volume program, called as `<cmd> get`, `<cmd> set <0..100>` and `<cmd> mute on|off`. Takes precedence over mixer_control.")
 
 	bluetooth     = flag.Bool("bluetooth", config.EnvBool("MARUSYA_BLUETOOTH", true), "Enable Bluetooth control via bluetoothctl.")
 	btPairCommand = flag.String("bt_pair_command", config.Env("MARUSYA_BT_PAIR_COMMAND", "auto"), `Pairing tool, e.g. "bt-pair" or "bt-pair {timeout}". "auto" uses bt-pair if it is in PATH; empty uses the built-in bluetoothctl flow.`)
@@ -228,7 +230,9 @@ func run() error {
 
 	// Device controllers. Leave interfaces nil to disable an area.
 	dispatcher := &controller.Dispatcher{}
-	if *mixerControl != "" {
+	if *volumeCmd != "" {
+		dispatcher.Volume = &volumecmd.Volume{Command: *volumeCmd}
+	} else if *mixerControl != "" {
 		dispatcher.Volume = &amixer.Volume{Card: *mixerCard, Control: *mixerControl}
 	}
 	if *bluetooth {

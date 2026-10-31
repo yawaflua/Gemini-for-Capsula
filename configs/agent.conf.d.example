@@ -16,6 +16,10 @@ MARUSYA_TIMEZONE=
 MARUSYA_CAPTURE_DEVICE=default
 MARUSYA_PLAYBACK_DEVICE=default
 MARUSYA_MIXER_CONTROL=Master
+# External volume program, called as `<cmd> get`, `<cmd> set <0..100>`
+# and `<cmd> mute on|off`. Takes precedence over MARUSYA_MIXER_CONTROL.
+# See configs/volume-capsule-ipc.example.sh.
+MARUSYA_VOLUME_CMD=
 
 # Keyword spotter: reads 16 kHz mono S16LE on stdin, prints a line per hit.
 MARUSYA_WAKE_COMMAND=
