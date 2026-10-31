@@ -137,6 +137,20 @@ type voiced interface {
 // speech returns speech recognition and synthesis for the pipeline spec s.
 // Every provider gets its own instance, so their voices are independent.
 func (o BuildOptions) speech(ctx context.Context, s Spec, all []Spec) (speech.Recognizer, speech.Synthesizer, error) {
+	if s.STTProvider != "" || s.TTSProvider != "" {
+		rec, err := o.speechOne(ctx, s.STTProvider, all)
+		if err != nil {
+			return nil, nil, fmt.Errorf("распознавание речи: %w", err)
+		}
+		syn, err := o.speechOne(ctx, s.TTSProvider, all)
+		if err != nil {
+			return nil, nil, fmt.Errorf("синтез речи: %w", err)
+		}
+		if s.Voice != "" {
+			syn.SetVoice(s.Voice)
+		}
+		return rec, syn, nil
+	}
 	var sp voiced
 	switch src := s.Speech; {
 	case strings.HasPrefix(src, SpeechPlugin):
@@ -161,7 +175,7 @@ func (o BuildOptions) speech(ctx context.Context, s Spec, all []Spec) (speech.Re
 		}
 		sp = g
 	case src == SpeechSelf:
-		sp = o.openai(s.BaseURL, s.APIKey)
+		sp = o.openai(s)
 	default:
 		var from Spec
 		for _, a := range all {
@@ -177,7 +191,8 @@ func (o BuildOptions) speech(ctx context.Context, s Spec, all []Spec) (speech.Re
 			}
 			sp = g
 		case KindOpenAI, KindOpenAIRealtime:
-			sp = o.openai(httpURL(from.BaseURL), from.APIKey)
+			from.BaseURL = httpURL(from.BaseURL)
+			sp = o.openai(from)
 		default:
 			return nil, nil, fmt.Errorf("провайдер %q не умеет распознавать речь", src)
 		}
@@ -191,12 +206,33 @@ func (o BuildOptions) speech(ctx context.Context, s Spec, all []Spec) (speech.Re
 	return sp, sp, nil
 }
 
+func (o BuildOptions) speechOne(ctx context.Context, id string, all []Spec) (voiced, error) {
+	var from Spec
+	for _, a := range all {
+		if a.ID == id {
+			from = a
+		}
+	}
+	switch from.Kind {
+	case KindGemini:
+		return o.gemini(ctx, from.APIKey, from.BaseURL)
+	case KindOpenAI, KindOpenAIRealtime:
+		from.BaseURL = httpURL(from.BaseURL)
+		return o.openai(from), nil
+	}
+	return nil, fmt.Errorf("провайдер %q не умеет работать с речью", id)
+}
+
 func (o BuildOptions) gemini(ctx context.Context, key, baseURL string) (*geminispeech.Speech, error) {
 	return geminispeech.New(ctx, geminispeech.Config{APIKey: key, BaseURL: baseURL, Transport: o.GeminiTransport})
 }
 
-func (o BuildOptions) openai(baseURL, key string) *openaispeech.Speech {
-	return openaispeech.New(openaispeech.Config{BaseURL: baseURL, APIKey: key, HTTPClient: o.HTTPClient})
+func (o BuildOptions) openai(s Spec) *openaispeech.Speech {
+	return openaispeech.New(openaispeech.Config{
+		BaseURL: s.BaseURL, APIKey: s.APIKey,
+		STTModel: s.STTModel, TTSModel: s.TTSModel, Voice: s.Voice,
+		HTTPClient: o.HTTPClient,
+	})
 }
 
 // httpURL turns the WebSocket URL of a realtime provider into the REST one.
