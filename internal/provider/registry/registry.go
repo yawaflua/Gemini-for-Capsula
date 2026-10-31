@@ -53,6 +53,9 @@ const (
 	// KindAnthropic is the Claude Messages API with speech recognition and
 	// synthesis around it.
 	KindAnthropic Kind = "anthropic"
+	// KindPlugin is a text model implemented by a server plugin; Model is
+	// "<plugin>/<provider>".
+	KindPlugin Kind = "plugin"
 )
 
 // KindInfo describes a [Kind] for the panel.
@@ -80,9 +83,13 @@ type Spec struct {
 	// Speech chooses speech recognition and synthesis for pipeline kinds:
 	// "" uses the server's Gemini speech, SpeechSelf this provider's own
 	// OpenAI compatible audio endpoints, anything else is the ID of a
-	// Gemini or OpenAI provider whose key is used.
+	// Gemini or OpenAI provider whose key is used, and SpeechPlugin +
+	// "<plugin>/<engine>" a speech engine of a server plugin.
 	Speech string `json:"speech,omitempty"`
 }
+
+// SpeechPlugin prefixes a speech engine of a plugin in [Spec.Speech].
+const SpeechPlugin = "plugin:"
 
 // SpeechSelf in [Spec.Speech] uses the provider's own audio endpoints.
 const SpeechSelf = "self"
@@ -131,13 +138,20 @@ func (s *Spec) validate(others []Spec) error {
 	if s.Model == "" {
 		s.Model = info.Model
 	}
+	if s.Kind == KindPlugin && !strings.Contains(s.Model, "/") {
+		return errors.New("модель провайдера из плагина пишется как «плагин/провайдер»")
+	}
 	if !info.Pipeline {
 		s.Speech = ""
 		return nil
 	}
-	switch s.Speech {
-	case "":
-	case SpeechSelf:
+	switch {
+	case s.Speech == "":
+	case strings.HasPrefix(s.Speech, SpeechPlugin):
+		if !strings.Contains(strings.TrimPrefix(s.Speech, SpeechPlugin), "/") {
+			return errors.New("речь из плагина пишется как «plugin:плагин/движок»")
+		}
+	case s.Speech == SpeechSelf:
 		if s.Kind != KindOpenAI {
 			return errors.New("свои аудио-эндпоинты бывают только у OpenAI-совместимого провайдера")
 		}

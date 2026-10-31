@@ -414,6 +414,8 @@ func run() error {
 		FollowUp:  *followUp,
 		DuckMedia: *duckMedia,
 
+		PluginsDir: *pluginsDir,
+
 		OnConnected: onConnected,
 	}, log, deps)
 	if plugins != nil {

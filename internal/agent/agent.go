@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -68,6 +69,10 @@ type Config struct {
 	AnswerTimeout time.Duration
 	// DuckMedia pauses the media player while the assistant is active.
 	DuckMedia bool
+	// PluginsDir is the directory of Deps.Plugins. With it the agent
+	// installs plugins from the plugin catalog through the server (see
+	// models.TypeCatalogPlugins); the plugins must implement Rescan().
+	PluginsDir string
 	// OnConnected, if set, runs in its own goroutine after every
 	// (re)connection to the server, with a context ending on disconnect.
 	OnConnected func(ctx context.Context)
@@ -125,6 +130,9 @@ type Agent struct {
 	busy   atomic.Bool // not idle: listening, thinking or speaking
 	alarm  *alarmClock
 	mutes  chan bool
+
+	catMu  sync.Mutex   // syncs of the catalog plugins
+	catGen atomic.Int64 // the newest list of catalog plugins
 }
 
 // Busy reports whether the assistant is using the speaker (listening,

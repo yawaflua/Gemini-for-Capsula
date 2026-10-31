@@ -40,8 +40,8 @@ import (
 
 // installRequest sets up a speaker over SSH from the web panel, the same as
 // "make deploy-agent": the OpenRC service and its config, which download
-// the agent from this server on every start. Optionally also the AirPlay 2
-// receiver and spotifyd. The password is used once and never stored.
+// the agent from this server on every start. Optionally also the agent's
+// D-Bus service, the AirPlay 2 receiver and spotifyd. The password is used once and never stored.
 type installRequest struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
@@ -51,9 +51,11 @@ type installRequest struct {
 	// ws://192.168.1.10:8080/v1/stream.
 	Server string `json:"server"`
 	// Name is how the speaker shows up in AirPlay and Spotify.
-	Name    string `json:"name"`
-	AirPlay bool   `json:"airplay"`
-	Spotify bool   `json:"spotify"`
+	Name string `json:"name"`
+	// DBus registers ru.marusya.Agent on the speaker's system bus.
+	DBus    bool `json:"dbus"`
+	AirPlay bool `json:"airplay"`
+	Spotify bool `json:"spotify"`
 }
 
 type installResult struct {
@@ -106,6 +108,23 @@ cat "$d/new" > "$r/etc/conf.d/marusya-agent"
 sync
 rc-update add marusya-agent default >/dev/null 2>&1 || true
 rc-service marusya-agent restart
+`
+
+// dbusScript registers the agent's service on the system bus: the D-Bus
+// policy from stdin, the "marusya" group it lets drive the ring and the
+// display, and the dbus service, which then rereads its policies. It runs
+// before [installScript], whose agent restart then takes the bus name.
+const dbusScript = `set -e
+r="${INSTALL_ROOT:-}"
+command -v dbus-daemon >/dev/null 2>&1 || apk add --no-cache dbus
+mkdir -p "$r/etc/dbus-1/system.d"
+cat > "$r/etc/dbus-1/system.d/ru.marusya.Agent.conf"
+grep -q '^marusya:' "$r/etc/group" 2>/dev/null || addgroup -S marusya
+sync
+rc-update add dbus default >/dev/null 2>&1 || true
+rc-service dbus status >/dev/null 2>&1 || rc-service dbus start
+dbus-send --system --type=signal / org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 || true
+echo "ru.marusya.Agent: правила D-Bus установлены"
 `
 
 // airplayScript unpacks the bundle from stdin and runs its installer, which
@@ -204,7 +223,7 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("токен сервера содержит перевод строки"))
 		return
 	}
-	log := s.cfg.Logger.With("host", req.Host, "remote", r.RemoteAddr, "airplay", req.AirPlay, "spotify", req.Spotify)
+	log := s.cfg.Logger.With("host", req.Host, "remote", r.RemoteAddr, "dbus", req.DBus, "airplay", req.AirPlay, "spotify", req.Spotify)
 	log.Info("installing on a speaker")
 	ctx, cancel := context.WithTimeout(r.Context(), installTimeout)
 	defer cancel()
@@ -247,8 +266,15 @@ func (in *installer) run(ctx context.Context, req installRequest) (res installRe
 		}
 	}()
 
+	if req.DBus {
+		fmt.Fprintln(&out, "== D-Bus ==")
+		if err := runRemote(ctx, client, dbusScript, strings.NewReader(agentdeploy.AgentDBus), &out); err != nil {
+			return res, nil, fmt.Errorf("регистрация в D-Bus не удалась: %w", err)
+		}
+		fmt.Fprintln(&out)
+	}
 	fmt.Fprintln(&out, "== Агент ==")
-	if err := runRemote(ctx, client, installScript, strings.NewReader(installInput(req.Server, in.token)), &out); err != nil {
+	if err := runRemote(ctx, client, installScript, strings.NewReader(installInput(req.Server, in.token, req.DBus)), &out); err != nil {
 		return res, nil, fmt.Errorf("установка агента не удалась: %w", err)
 	}
 	if req.AirPlay {
@@ -564,8 +590,9 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
-// installInput is the stdin of [installScript].
-func installInput(server, token string) string {
+// installInput is the stdin of [installScript]. With dbus it also turns
+// the agent's D-Bus service on, in case the config had it off.
+func installInput(server, token string, dbus bool) string {
 	var b strings.Builder
 	b.WriteString("__INIT__\n")
 	b.WriteString(strings.TrimSuffix(agentdeploy.OpenRC, "\n") + "\n")
@@ -574,6 +601,9 @@ func installInput(server, token string) string {
 	b.WriteString("__SET__\n")
 	b.WriteString("MARUSYA_SERVER=" + shellQuote(server) + "\n")
 	b.WriteString("MARUSYA_AUTH_TOKEN=" + shellQuote(token) + "\n")
+	if dbus {
+		b.WriteString("MARUSYA_DBUS=true\n")
+	}
 	return b.String()
 }
 

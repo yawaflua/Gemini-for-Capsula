@@ -130,6 +130,13 @@ type Config struct {
 	// plugin.json (see pkg/pluginsdk); empty disables plugins. Call
 	// [Server.StartPlugins] to run them.
 	PluginsDir string
+	// PluginRegistry is the address of the plugin catalog (registry/ in
+	// this repository), e.g. https://marusya.ywfl.dev. The panel searches
+	// it and installs plugins from it into PluginsDir; empty hides it.
+	PluginRegistry string
+	// PluginBackends, if set, gets the plugin manager, so the provider
+	// registry can use the model providers and speech of plugins.
+	PluginBackends *plugin.Backends
 	// Version is shown in the web panel.
 	Version string
 	// Logger receives structured logs.
@@ -175,6 +182,7 @@ type Server struct {
 	profiles map[string]Profile // by device ID
 
 	plugins     *plugin.Manager // nil without PluginsDir
+	catmu       sync.Mutex      // installs and removals from the plugin catalog
 	plmu        sync.Mutex
 	pluginTools string // names of the plugin tools, see pluginsChanged
 
@@ -231,8 +239,12 @@ func New(cfg Config) *Server {
 	if cfg.AgentDir != "" {
 		s.mux.HandleFunc("GET /v1/agent/{arch}", s.handleAgent)
 	}
+	if cfg.PluginsDir != "" {
+		s.mux.HandleFunc("GET /v1/plugins/{id}", s.handleSpeakerPlugin)
+	}
 	s.mux.HandleFunc("POST /v1/ask", s.handleAsk)
 	s.mux.HandleFunc("GET "+media.Path, s.handleMedia)
+	s.mux.HandleFunc(PluginHTTPPrefix+"{id}/{path...}", s.handlePluginHTTP)
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok\n"))
 	})

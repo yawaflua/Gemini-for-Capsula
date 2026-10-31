@@ -17,7 +17,9 @@ package server
 import (
 	"errors"
 	"net/http"
+	"slices"
 
+	"github.com/yawaflua/marusya-gemini/internal/plugin"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
 	"github.com/yawaflua/marusya-gemini/internal/provider/registry"
 )
@@ -39,6 +41,10 @@ type providersState struct {
 	Kinds     []registry.KindInfo `json:"kinds"`
 	Providers []registry.View     `json:"providers"`
 	Active    string              `json:"active"`
+	// PluginProviders and PluginSpeech are what the running server
+	// plugins implement, for the kind "plugin" and the speech choice.
+	PluginProviders []plugin.ProviderInfo `json:"plugin_providers"`
+	PluginSpeech    []plugin.SpeechInfo   `json:"plugin_speech"`
 }
 
 func (s *Server) providersState() providersState {
@@ -47,10 +53,22 @@ func (s *Server) providersState() providersState {
 		return providersState{}
 	}
 	views, active := reg.List()
-	return providersState{
+	st := providersState{
 		Enabled: true, Saved: s.cfg.ProvidersFile != "",
 		Kinds: registry.Kinds(), Providers: views, Active: active,
+		PluginProviders: s.plugins.Providers(), PluginSpeech: s.plugins.SpeechEngines(),
 	}
+	if st.PluginProviders == nil {
+		st.PluginProviders = []plugin.ProviderInfo{}
+	}
+	if st.PluginSpeech == nil {
+		st.PluginSpeech = []plugin.SpeechInfo{}
+	}
+	if s.plugins == nil {
+		// Without plugins the kind cannot be built.
+		st.Kinds = slices.DeleteFunc(st.Kinds, func(k registry.KindInfo) bool { return k.Kind == registry.KindPlugin })
+	}
+	return st
 }
 
 var errNoRegistry = errors.New("провайдеры настраиваются только в конфигурации сервера")

@@ -27,3 +27,9 @@ var SpotifydConf string
 //
 //go:embed spotifyd-dbus.conf
 var SpotifydDBus string
+
+// AgentDBus is /etc/dbus-1/system.d/ru.marusya.Agent.conf, the system bus
+// policy of the agent's own D-Bus service.
+//
+//go:embed ru.marusya.Agent.conf
+var AgentDBus string

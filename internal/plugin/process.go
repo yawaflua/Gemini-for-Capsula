@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -64,6 +65,7 @@ type instance struct {
 	conn     *jsonrpc.Conn
 	tools    []pluginsdk.ToolSpec
 	events   []string
+	caps     capabilities
 	state    string
 	err      string
 	restarts int
@@ -73,6 +75,17 @@ type instance struct {
 	ready    chan struct{} // closed after the first initialization attempt
 
 	queue chan notification
+
+	outMu   sync.Mutex
+	outputs map[string]func(string) // running provider turns, by session
+}
+
+// capabilities are what a server plugin implements besides tools.
+type capabilities struct {
+	instructions string
+	providers    []pluginsdk.ProviderSpec
+	speech       []pluginsdk.SpeechSpec
+	http         *pluginsdk.HTTPSpec
 }
 
 type notification struct {
@@ -138,7 +151,7 @@ func (in *instance) setState(state, err string) {
 	changed := in.state != state || in.err != err
 	in.state, in.err = state, err
 	if state != StateRunning {
-		in.tools, in.events, in.conn = nil, nil, nil
+		in.tools, in.events, in.conn, in.caps = nil, nil, nil, capabilities{}
 	}
 	in.mu.Unlock()
 	if changed {
@@ -231,6 +244,8 @@ func (in *instance) run(ctx context.Context, ready func()) error {
 	go in.copyStderr(stderr)
 
 	conn := jsonrpc.New(stdout, stdin, in.handle)
+	// Streamed reply text must reach the turn before the reply itself.
+	conn.Ordered(pluginsdk.MethodProviderOutput)
 	served := make(chan error, 1)
 	go func() { served <- conn.Run(context.Background()) }()
 	exited := make(chan error, 1)
@@ -311,11 +326,45 @@ func (in *instance) accept(conn *jsonrpc.Conn, res pluginsdk.InitializeResult) e
 		}
 		tools = append(tools, t)
 	}
+	caps := capabilities{instructions: strings.TrimSpace(res.Instructions)}
+	if in.mgr.cfg.Host == pluginsdk.HostServer {
+		for _, p := range res.Providers {
+			if !nameRe.MatchString(p.Name) {
+				in.log.Warn("provider rejected: bad name", "provider", p.Name)
+				continue
+			}
+			caps.providers = append(caps.providers, p)
+		}
+		for _, sp := range res.Speech {
+			if !nameRe.MatchString(sp.Name) || (!sp.Synthesize && !sp.Transcribe) {
+				in.log.Warn("speech engine rejected: bad name or nothing to do", "engine", sp.Name)
+				continue
+			}
+			if sp.SampleRate <= 0 {
+				sp.SampleRate = pluginsdk.DefaultSampleRate
+			}
+			caps.speech = append(caps.speech, sp)
+		}
+		caps.http = res.HTTP
+	} else if caps.instructions != "" || len(res.Providers)+len(res.Speech) > 0 || res.HTTP != nil {
+		in.log.Warn("instructions, providers, speech and HTTP work only on the server; ignored")
+		caps = capabilities{}
+	}
 	in.mu.Lock()
-	in.conn, in.tools, in.events = conn, tools, res.Events
+	in.conn, in.tools, in.events, in.caps = conn, tools, res.Events, caps
 	in.state, in.err = StateRunning, ""
 	in.mu.Unlock()
 	return nil
+}
+
+// nameRe checks the names of providers and speech engines.
+var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// capabilities returns what the running plugin implements.
+func (in *instance) capabilities() capabilities {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.caps
 }
 
 func (in *instance) copyStderr(r io.Reader) {
@@ -383,6 +432,47 @@ func (in *instance) handle(ctx context.Context, method string, params json.RawMe
 			return nil, errors.New("there is no other half to send to")
 		}
 		return nil, h.Send(ctx, in.m.ID, p.Device, p.Data)
+
+	case pluginsdk.MethodRequest:
+		var p pluginsdk.RequestParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, bad(err)
+		}
+		sh, ok := h.(ServerHandler)
+		if !ok {
+			return nil, errors.New("requests to the assistant are sent only from the server")
+		}
+		return nil, sh.Request(ctx, in.m.ID, p.Device, p.Text)
+
+	case pluginsdk.MethodInstructions:
+		var p pluginsdk.InstructionsParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, bad(err)
+		}
+		if in.mgr.cfg.Host != pluginsdk.HostServer {
+			return nil, errors.New("instructions are set only on the server")
+		}
+		in.mu.Lock()
+		changed := in.caps.instructions != strings.TrimSpace(p.Text)
+		in.caps.instructions = strings.TrimSpace(p.Text)
+		in.mu.Unlock()
+		if changed {
+			in.mgr.changed()
+		}
+		return nil, nil
+
+	case pluginsdk.MethodProviderOutput:
+		var p pluginsdk.ProviderOutputParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, bad(err)
+		}
+		in.outMu.Lock()
+		f := in.outputs[p.Session]
+		in.outMu.Unlock()
+		if f != nil {
+			f(p.Text)
+		}
+		return nil, nil
 	}
 	return nil, jsonrpc.ErrMethodNotFound(method)
 }
@@ -450,4 +540,46 @@ func (in *instance) call(ctx context.Context, name string, args map[string]any, 
 	var v any
 	json.Unmarshal(raw, &v)
 	return map[string]any{"result": v}, nil
+}
+
+// rpc returns the connection of the running plugin.
+func (in *instance) rpc() (*jsonrpc.Conn, error) {
+	in.mu.Lock()
+	conn := in.conn
+	in.mu.Unlock()
+	if conn == nil {
+		return nil, fmt.Errorf("plugin %s is not running", in.m.ID)
+	}
+	return conn, nil
+}
+
+// turn runs one call of a provider turn; output receives the streamed text.
+func (in *instance) turn(ctx context.Context, p pluginsdk.ProviderTurnParams, output func(string)) (pluginsdk.ProviderTurnResult, error) {
+	var res pluginsdk.ProviderTurnResult
+	conn, err := in.rpc()
+	if err != nil {
+		return res, err
+	}
+	in.outMu.Lock()
+	if in.outputs == nil {
+		in.outputs = map[string]func(string){}
+	}
+	in.outputs[p.Session] = output
+	in.outMu.Unlock()
+	defer func() {
+		in.outMu.Lock()
+		delete(in.outputs, p.Session)
+		in.outMu.Unlock()
+	}()
+	err = conn.Call(ctx, pluginsdk.MethodProviderTurn, p, &res)
+	return res, err
+}
+
+// request calls a method of the running plugin.
+func (in *instance) request(ctx context.Context, method string, params, result any) error {
+	conn, err := in.rpc()
+	if err != nil {
+		return err
+	}
+	return conn.Call(ctx, method, params, result)
 }

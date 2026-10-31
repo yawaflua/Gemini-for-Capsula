@@ -1,0 +1,13 @@
+{
+  "id": "piper",
+  "name": "Piper TTS",
+  "version": "1.0.0",
+  "description": "Офлайн-синтез речи Piper на сервере. Положите модели голосов (.onnx и .onnx.json) рядом с плагином, перечислите их в настройках и выберите речь «plugin:piper/piper» у провайдера. Пример плагина синтеза речи.",
+  "server": {"command": ["python3", "piper.py"]},
+  "config": {
+    "piper": "piper",
+    "sample_rate": 22050,
+    "voice": "irina",
+    "voices": {"irina": "ru_RU-irina-medium.onnx", "dmitri": "ru_RU-dmitri-medium.onnx"}
+  }
+}

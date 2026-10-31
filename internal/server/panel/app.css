@@ -459,3 +459,8 @@ body:not(.tunable) .tunable { display: none; }
 .plugin-config textarea { font: 13px/20px "Roboto Mono", ui-monospace, Menlo, monospace; min-height: 120px; }
 .badge.failed { background: var(--md-error-container, rgba(220,50,50,.15)); color: var(--md-error); }
 .badge.off { background: var(--md-surface-container-highest); color: var(--md-on-surface-variant); }
+
+.catalog-search { display: flex; gap: 8px; margin-top: 12px; }
+.catalog-search input { flex: 1 1 auto; min-width: 0; }
+.catalog-speakers { flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.catalog-speaker { gap: 6px; align-items: center; }

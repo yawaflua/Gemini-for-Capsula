@@ -1,0 +1,47 @@
+# The Marusya plugin catalog: PostgreSQL and one container with the API and
+# the site (it applies the database migrations itself on start). Put it
+# behind your TLS proxy, e.g. at https://marusya.ywfl.dev.
+#
+#   cp backend/env.example .env   # then set JWT_SECRET and the passwords
+#   docker compose up -d --build
+
+volumes:
+  db:
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PSQL_DATABASE:-marusya}
+      POSTGRES_USER: ${PSQL_USERNAME:-marusya}
+      POSTGRES_PASSWORD: ${PSQL_PASSWORD:-marusya}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  registry:
+    build:
+      context: .
+      args:
+        VITE_SITE_URL: https://${REGISTRY_DOMAIN:-marusya.ywfl.dev}
+    restart: unless-stopped
+    environment:
+      PSQL_HOST: db
+      PSQL_PORT: "5432"
+      PSQL_DATABASE: ${PSQL_DATABASE:-marusya}
+      PSQL_USERNAME: ${PSQL_USERNAME:-marusya}
+      PSQL_PASSWORD: ${PSQL_PASSWORD:-marusya}
+      PSQL_SSLMODE: disable
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a random string of at least 32 bytes}
+      JWT_AUDIENCE: ${REGISTRY_DOMAIN:-marusya.ywfl.dev}
+      JWT_ISSUER: ${REGISTRY_DOMAIN:-marusya.ywfl.dev}
+    ports:
+      - "${REGISTRY_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy

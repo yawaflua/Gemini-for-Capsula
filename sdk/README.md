@@ -14,7 +14,13 @@ SDK:
 | C++17 | [cpp/marusya_plugin.hpp](cpp/marusya_plugin.hpp) | один заголовок, без зависимостей, `-pthread` |
 | Python 3.8+ | [python/marusya_plugin.py](python/marusya_plugin.py) | положить файл рядом с плагином |
 
+Go и Python SDK умеют всё, что описано ниже. C++ SDK умеет то, что работает на обеих сторонах
+(функции, события, `host.command`, `plugin.send`, `log`): серверных возможностей из раздела
+[«Только на сервере»](#только-на-сервере-модель-речь-http-инструкции) в нём пока нет.
+
 Примеры: [examples/plugins](../examples/plugins); самый простой — `coin` («подбрось монетку»).
+Провайдер модели — `ollama`, синтез речи — `piper`, HTTP и системная инструкция — `mood` и
+`ytmusic`, две половины на Go — `airplay`.
 
 ## plugin.json
 
@@ -103,6 +109,9 @@ SDK:
 | `host.say` | `{"device":"kitchen","text":"Готово","listen":false}` | `{"answer":"..."}` | сервер |
 | `host.devices` | `{}` | `{"devices":[{"id":"kitchen",...}]}` | сервер |
 | `plugin.send` | `{"device":"kitchen","data":{...}}` | — | везде |
+| `host.request` | `{"device":"kitchen","text":"Какая погода?"}` | — | сервер |
+| `host.instructions` | `{"text":"Отвечай как пират."}` | — | сервер |
+| `provider.output` (уведомление) | `{"session":"...","text":"часть ответа"}` | — | сервер |
 
 - `host.command` выполняет действие колонки, перечисленное в её `hello.capabilities`
   (`internal/models/command.go`): `volume.set`, `media.control`, `media.play_search`,
@@ -112,9 +121,105 @@ SDK:
 - `host.say` требует распознавания и синтеза речи на сервере (как `/v1/ask`). С `listen`
   колонка ждёт ответа и возвращает его текстом.
 - `plugin.send` на сервере с пустым `device` рассылает данные всем колонкам с этим плагином.
+- `host.request` передаёт текст Марусе на колонке так, будто его сказали вслух: модель
+  отвечает, может вызывать функции, и ответ звучит на колонке. Возвращается сразу, не дожидаясь
+  ответа. До 1000 символов. Если колонка сейчас разговаривает или провайдер не принимает
+  текст, запрос вернёт ошибку.
+- `host.instructions` заменяет дополнение плагина к системной инструкции (см. ниже).
 
 Плагин может вызывать хост прямо во время обработки `tool.call`: все SDK обрабатывают запросы
 параллельно.
+
+## Только на сервере: модель, речь, HTTP, инструкции
+
+Серверный плагин может добавить в ответ на `initialize` необязательные поля. Агент на колонке
+их пропускает и пишет предупреждение в лог. Имена провайдеров и движков подчиняются правилу
+`^[a-z0-9][a-z0-9_-]{0,31}$`.
+
+```json
+{"protocol":1,"tools":[],
+ "instructions":"Твоё настроение: весёлое.",
+ "providers":[{"name":"chat","label":"Ollama","description":"Локальная модель"}],
+ "speech":[{"name":"piper","label":"Piper","synthesize":true,"transcribe":false,
+            "sample_rate":22050,"voices":["irina","dmitri"]}],
+ "http":{"public":false}}
+```
+
+### Дополнение к системной инструкции
+
+`instructions` — текст, который сервер добавляет к системной инструкции модели на всех колонках.
+Так задают характер, манеру речи или знания о доме. Поменять его на ходу можно запросом
+`host.instructions`: беседы обновятся к следующей реплике. Пустая строка убирает дополнение.
+
+### Провайдер модели
+
+Провайдер `chat` плагина `ollama` выбирается во вкладке «Провайдеры»: тип «Плагин сервера»,
+модель `ollama/chat`. Сервер распознаёт речь сам (или движком из поля «Речь»), а затем
+вызывает плагин:
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"provider.turn","params":{
+  "provider":"chat","session":"kitchen-3f2a","text":"какая громкость?",
+  "system":"Ты Маруся, голосовой ассистент...","language":"ru-RU",
+  "tools":[{"name":"volume_get","description":"...","params":[]}]}}
+```
+
+- `session` — беседа. Историю плагин хранит сам; когда беседа заканчивается, приходит
+  уведомление `provider.close` `{"provider":"chat","session":"kitchen-3f2a"}`.
+- Ответ: `{"text":"...","tool_calls":[{"id":"c1","name":"volume_get","args":{}}]}`. Если есть
+  `tool_calls`, сервер выполняет функции и снова вызывает `provider.turn` с пустым `text` и
+  `"tool_results":[{"id":"c1","name":"volume_get","output":{"level":42}}]` (или `"error"`).
+  Так повторяется до 8 раз за реплику.
+- Чтобы колонка заговорила раньше, ответ можно отправлять кусками уведомлениями
+  `provider.output` `{"session":"...","text":"..."}` до ответа на запрос. Сервер озвучивает
+  их по предложениям, затем `text` из ответа. Уведомления обрабатываются по порядку.
+
+### Синтез и распознавание речи
+
+Движок `piper` плагина `piper` выбирается в поле «Речь» провайдера как
+`plugin:piper/piper`. Звук передаётся в base64 как 16-битный little-endian моно PCM.
+
+```json
+{"method":"speech.synthesize","params":{"engine":"piper","text":"Привет!","language":"ru-RU","voice":"irina"}}
+→ {"audio":"<base64 PCM с частотой sample_rate>"}
+{"method":"speech.transcribe","params":{"engine":"whisper","audio":"<base64 PCM>","sample_rate":16000,"language":"ru-RU"}}
+→ {"text":"привет"}
+```
+
+`sample_rate` синтеза по умолчанию 24000. Если движок умеет только одно из двух или плагин не
+запущен, второе делает Gemini сервера.
+
+### HTTP
+
+С полем `http` запросы к `/plugins/<id>/<путь>` на сервере приходят плагину:
+
+```json
+{"method":"http.request","params":{"method":"POST","path":"/hook","query":"a=1",
+  "header":{"Content-Type":["application/json"]},"body":"<base64>","remote_addr":"10.0.0.5:51234"}}
+→ {"status":200,"header":{"Content-Type":["text/html; charset=utf-8"]},"body":"<base64>"}
+```
+
+- Без `public` нужен вход в веб-панель (для методов кроме GET и HEAD ещё заголовок
+  `X-Marusya-Panel: 1`) или `Authorization: Bearer <MARUSYA_AUTH_TOKEN>`. С `public` адрес
+  открыт всем, и проверять доступ плагин должен сам.
+- Cookie и (без `public`) `Authorization` плагину не передаются. Тело запроса — до 4 МБ,
+  ответить нужно за минуту.
+- Если `Content-Type` не задан, сервер определяет его сам и всегда добавляет
+  `X-Content-Type-Options: nosniff`.
+
+### В SDK
+
+| | Go | Python |
+|---|---|---|
+| инструкция | `p.Instructions(ctx, text)` | `plugin.instructions = ...`, `plugin.set_instructions(text)` |
+| вопрос Марусе | `p.Request(ctx, device, text)` | `plugin.request(text, device)` |
+| провайдер | `p.Provider(spec, ProviderHandler{Turn, Close})`, `turn.Write(text)` | `@plugin.provider(name, label, close=fn)`, `turn.write(text)` |
+| речь | `p.Speech(spec, SpeechHandler{Synthesize, Transcribe})` | `@plugin.synthesizer(...)`, `@plugin.transcriber(...)`, `plugin.set_speech(...)` |
+| HTTP | `p.HTTP(http.Handler, public)` | `@plugin.http(public=False)` |
+
+В Go обработчик HTTP — обычный `http.Handler`. В Python функция получает `HTTPRequest` (`method`,
+`path`, `query`, `headers`, `body`, `arg()`, `json()`) и возвращает строку (HTML), dict/list
+(JSON), bytes или кортеж `(status, headers, body)`.
 
 ## Жизненный цикл
 

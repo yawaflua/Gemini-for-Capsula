@@ -1,0 +1,8 @@
+{
+  "id": "ollama",
+  "name": "Ollama",
+  "version": "1.0.0",
+  "description": "Своя языковая модель через локальную Ollama. Во вкладке «Провайдеры» выберите тип «Плагин сервера» и модель ollama/chat. Пример плагина-провайдера: история, потоковый ответ и вызовы функций.",
+  "server": {"command": ["python3", "ollama.py"]},
+  "config": {"url": "http://localhost:11434", "model": "qwen3:8b", "history": 40, "timeout": 120}
+}
