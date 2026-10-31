@@ -116,6 +116,12 @@ func (p *speakerPlugins) Show(st indicator.State) {
 	p.m.Event(pluginsdk.Event{Kind: pluginsdk.EventState, Device: p.dev.ID, Data: map[string]any{"state": st.String()}})
 }
 
+// Volume tells the plugins that the speaker's volume changed; it is the
+// OnChange of a [controller.ObservedVolume].
+func (p *speakerPlugins) Volume(st models.VolumeState) {
+	p.m.Event(pluginsdk.Event{Kind: pluginsdk.EventVolume, Device: p.dev.ID, Data: map[string]any{"level": st.Level, "muted": st.Muted}})
+}
+
 // Command implements [plugin.Handler]: actions run on this speaker.
 func (p *speakerPlugins) Command(ctx context.Context, plugin, _, action string, args map[string]any) (map[string]any, error) {
 	res := p.dispatcher.Execute(ctx, &models.Command{ID: "plugin-" + plugin, Action: models.Action(action), Args: args})

@@ -136,8 +136,32 @@ trap 'rm -rf "$d"' EXIT
 cd "$d"
 tar xzf -
 cd capsula-mini-airplay2-*
-sh install.sh --upgrade --name ` + shellQuote(name) + "\n"
+sh install.sh --upgrade --name ` + shellQuote(name) + "\n" + airplayTune
 }
+
+// airplayTune adjusts the receiver's config for the airplay plugin: the
+// metadata pipe it reads (what plays, the phone's volume), and no software
+// volume in shairport-sync, so the phone's slider moves the speaker's
+// volume, which the display and the panel show, instead of attenuating the
+// stream behind them. A config already tuned is left alone.
+const airplayTune = `c="${INSTALL_ROOT:-}/etc/shairport-sync.conf"
+[ -f "$c" ] || exit 0
+changed=
+if ! grep -q 'ignore_volume_control' "$c"; then
+	awk '/^[ \t]*general[ \t]*=/ && !done {print; print "\tignore_volume_control = \"yes\";"; done=1; next} {print}' "$c" > "$d/conf"
+	cat "$d/conf" > "$c"
+	changed=1
+fi
+if ! grep -q '^[ \t]*metadata[ \t]*=' "$c"; then
+	printf '\nmetadata = {\n\tenabled = "yes";\n\tinclude_cover_art = "no";\n\tpipe_name = "/tmp/shairport-sync-metadata";\n};\n' >> "$c"
+	changed=1
+fi
+if [ -n "$changed" ]; then
+	sync
+	rc-service shairport-sync restart
+	echo "AirPlay: метаданные и громкость колонки включены"
+fi
+`
 
 // spotifydScript installs spotifyd from apk and its service. Stdin carries
 // the init script, the default config and the D-Bus policy after __INIT__,

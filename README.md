@@ -199,9 +199,10 @@ docker compose -f deploy/server/docker-compose.yaml up -d --build
 docker compose -f deploy/server/docker-compose.yaml logs -f
 ```
 
-Готовые образы для amd64 и arm64 CI собирает из `master` и тегов `v*`
+Готовые образы для amd64 и arm64 CI собирает из `master`, `stage` и тегов `v*`
 (`.github/workflows/docker.yml`): `ghcr.io/yawaflua/marusya-server` и
-`ghcr.io/yawaflua/marusya-wake`. Чтобы не собирать локально:
+`ghcr.io/yawaflua/marusya-wake`. Тег `latest` соответствует `master`, тег `dev`
+соответствует `stage`. Чтобы не собирать локально:
 
 ```bash
 docker compose -f deploy/server/docker-compose.yaml pull
@@ -841,6 +842,9 @@ log.Fatal(p.Run())
   на колонке можно оставить пустым;
 - событие `state` сообщает, что делает Маруся: `idle`, `listening`, `thinking`, `speaking`,
   `error`, `announcing`, `disconnected`. Например, по `listening` можно приглушить свою музыку;
+- событие `volume` приходит при любой смене громкости колонки (голосом, кнопками, из панели
+  или другим плагином): `data.level` от 0 до 100 и `data.muted`. По нему `airplay` двигает
+  ползунок громкости на телефоне;
 - функции плагина колонки попадают в список функций модели, когда колонка подключается
   (`hello.plugin_tools`). Модель вызывает их, сервер отправляет вызов на колонку, агент
   передаёт его плагину;
