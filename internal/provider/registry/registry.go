@@ -92,6 +92,9 @@ type Spec struct {
 	// Gemini or OpenAI provider whose key is used, and SpeechPlugin +
 	// "<plugin>/<engine>" a speech engine of a server plugin.
 	Speech string `json:"speech,omitempty"`
+	// FastPath handles short speaker commands without calling the text
+	// model. Off by default.
+	FastPath bool `json:"fast_path,omitempty"`
 }
 
 // SpeechPlugin prefixes a speech engine of a plugin in [Spec.Speech].

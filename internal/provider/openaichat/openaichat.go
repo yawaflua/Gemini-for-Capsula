@@ -60,6 +60,10 @@ type Config struct {
 	// Label names the backend in logs and the panel, e.g. "openrouter".
 	// Defaults to "openai".
 	Label string
+	// FastPath routes short speaker commands (volume, AirPlay, weather,
+	// time, simple smart home) straight to the tools, without the text
+	// model. Off by default.
+	FastPath bool
 
 	Recognizer  speech.Recognizer
 	Synthesizer speech.Synthesizer
@@ -224,6 +228,16 @@ type conversation struct {
 
 // Turn implements [pipeline.Conversation].
 func (c *conversation) Turn(ctx context.Context, text string, out *pipeline.Output) error {
+	// Short speaker commands bypass the text model: volume and AirPlay stay
+	// responsive when the backend is slow, offline or rate-limited.
+	if c.p.cfg.FastPath {
+		if msg, ok := c.fastPath(ctx, text, out); ok {
+			if msg.Content != "" {
+				c.history = append(c.history, message{Role: "user", Content: text}, msg)
+			}
+			return nil
+		}
+	}
 	// Messages of this turn join the history only if it completes.
 	msgs := append(c.history[:len(c.history):len(c.history)], message{Role: "user", Content: text})
 	for range maxIterations {

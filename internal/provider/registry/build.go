@@ -101,6 +101,7 @@ func NewBuilder(o BuildOptions) Builder {
 			}
 			return openaichat.New(openaichat.Config{
 				BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Label: s.ID,
+				FastPath:   s.FastPath,
 				Recognizer: rec, Synthesizer: syn, HTTPClient: o.HTTPClient, Logger: o.Logger,
 			})
 		case KindAnthropic:
