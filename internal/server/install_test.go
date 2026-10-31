@@ -45,6 +45,7 @@ var speakerStubs = map[string]string{
 	"rc-update":  `echo "$@" >> "$INSTALL_ROOT/rc.log"`,
 	"apk":        `echo "$@" >> "$INSTALL_ROOT/apk.log"`,
 	"dbus-send":  `true`,
+	"addgroup":   `echo "$@" >> "$INSTALL_ROOT/addgroup.log"`,
 	"wget":       `echo "$@" >> "$INSTALL_ROOT/wget.log"`,
 	"spotifyd": `case "$1" in
 --version) echo spotifyd 0.4.2 ;;
@@ -235,6 +236,53 @@ func TestInstallAgent(t *testing.T) {
 	req.Password = "wrong"
 	if _, _, err := fakeInstaller(t, "new").run(context.Background(), req); err == nil || !strings.Contains(err.Error(), "пароль") {
 		t.Errorf("wrong password: %v", err)
+	}
+}
+
+func TestInstallDBus(t *testing.T) {
+	addr, root := fakeSpeaker(t, "pw")
+	req := speakerRequest(t, addr, "pw")
+
+	if res, _, err := fakeInstaller(t, "tok").run(context.Background(), req); err != nil {
+		t.Fatalf("install: %v\n%s", err, res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "etc/dbus-1/system.d/ru.marusya.Agent.conf")); err == nil {
+		t.Error("D-Bus policy installed without asking")
+	}
+
+	// The owner had turned the service off; asking for D-Bus turns it on.
+	conf := filepath.Join(root, "etc/conf.d/marusya-agent")
+	os.WriteFile(conf, []byte(strings.Replace(readFile(t, conf), "MARUSYA_DBUS=true", "MARUSYA_DBUS=false", 1)), 0o644)
+	req.DBus = true
+	res, _, err := fakeInstaller(t, "tok").run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("install with D-Bus: %v\n%s", err, res.Output)
+	}
+	if got := readFile(t, filepath.Join(root, "etc/dbus-1/system.d/ru.marusya.Agent.conf")); got != agentdeploy.AgentDBus {
+		t.Error("D-Bus policy differs from deploy/agent/ru.marusya.Agent.conf")
+	}
+	if got := readFile(t, filepath.Join(root, "addgroup.log")); got != "-S marusya\n" {
+		t.Errorf("addgroup %q", got)
+	}
+	if got := readFile(t, conf); !strings.Contains(got, "\nMARUSYA_DBUS=true\n") || strings.Contains(got, "MARUSYA_DBUS=false") {
+		t.Errorf("config:\n%s", got)
+	}
+	log := readFile(t, filepath.Join(root, "rc.log"))
+	if !strings.Contains(log, "add dbus default") {
+		t.Errorf("dbus not enabled:\n%s", log)
+	}
+	// The policy is in place before the agent restarts and asks for the name.
+	if i, j := strings.LastIndex(log, "dbus status"), strings.LastIndex(log, "marusya-agent restart"); i < 0 || i > j {
+		t.Errorf("agent restarted before D-Bus was set up:\n%s", log)
+	}
+
+	// The group exists now: a second run leaves it alone.
+	os.WriteFile(filepath.Join(root, "etc/group"), []byte("root:x:0:\nmarusya:x:101:\n"), 0o644)
+	if res, _, err := fakeInstaller(t, "tok").run(context.Background(), req); err != nil {
+		t.Fatalf("reinstall: %v\n%s", err, res.Output)
+	}
+	if got := readFile(t, filepath.Join(root, "addgroup.log")); got != "-S marusya\n" {
+		t.Errorf("addgroup ran again: %q", got)
 	}
 }
 
