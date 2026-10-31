@@ -5,3 +5,6 @@
 
 # Server plugins mounted by deploy/server/docker-compose.yaml.
 /plugins/
+
+# Facts of examples/plugins/memory run from the repository.
+/examples/plugins/.memory.json

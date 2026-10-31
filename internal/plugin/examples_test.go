@@ -250,3 +250,59 @@ func TestOllamaExample(t *testing.T) {
 		t.Errorf("second request messages = %v", second)
 	}
 }
+
+func TestMemoryExample(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "memory")
+	os.MkdirAll(dir, 0o755)
+	build := exec.Command("go", "build", "-o", filepath.Join(dir, "memory"), "../../examples/plugins/memory")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	copyFile(t, filepath.Join("..", "..", "examples", "plugins", "memory", ManifestFile), filepath.Join(dir, ManifestFile))
+	start := func() (*Manager, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		m := New(Config{Dir: root, Host: pluginsdk.HostServer, Handler: &fakeHandler{}})
+		m.Start(ctx)
+		if st := m.List(); len(st) != 1 || st[0].State != StateRunning {
+			t.Fatalf("memory: %+v", st)
+		}
+		return m, cancel
+	}
+	m, stop := start()
+	if got := m.Instructions(); got != "" {
+		t.Errorf("initial instructions = %q", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	kitchen := pluginsdk.Device{ID: "kitchen"}
+	if out, err := m.Call(ctx, "memory_save", map[string]any{"fact": "Пользователя зовут Дима"}, kitchen); err != nil || out["id"] != float64(1) {
+		t.Fatalf("save = %v, %v", out, err)
+	}
+	m.Call(ctx, "memory_save", map[string]any{"fact": "Кота зовут Барсик"}, kitchen)
+	if got := m.Instructions(); !strings.Contains(got, "[1] Пользователя зовут Дима\n[2] Кота зовут Барсик") {
+		t.Errorf("instructions = %q", got)
+	}
+	if out, err := m.Call(ctx, "memory_forget", map[string]any{"text": "барсик"}, kitchen); err != nil || out["forgotten"] != "Кота зовут Барсик" {
+		t.Fatalf("forget = %v, %v", out, err)
+	}
+	if _, err := m.HTTP(ctx, "memory", pluginsdk.HTTPRequest{Method: "POST", Path: "/", Body: []byte(`{"action":"add","text":"Дима любит <джаз>"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.HTTP(ctx, "memory", pluginsdk.HTTPRequest{Method: "GET", Path: "/"})
+	if err != nil || res.Status != 200 || !strings.Contains(string(res.Body), "Дима любит &lt;джаз&gt;") || strings.Contains(string(res.Body), "<td>Кота зовут Барсик</td>") {
+		t.Fatalf("page = %v %s", err, res.Body)
+	}
+	stop()
+
+	// The memory is kept outside the plugin directory and survives a restart.
+	if _, err := os.Stat(filepath.Join(root, ".memory.json")); err != nil {
+		t.Fatal(err)
+	}
+	m, stop = start()
+	defer stop()
+	if got := m.Instructions(); !strings.Contains(got, "[1] Пользователя зовут Дима\n[3] Дима любит <джаз>") {
+		t.Errorf("instructions after restart = %q", got)
+	}
+}

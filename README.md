@@ -793,6 +793,8 @@ cp -r examples/plugins/coin plugins/
 cp sdk/python/marusya_plugin.py plugins/coin/
 # серверный плагин на Go
 go build -o examples/plugins/dice/dice ./examples/plugins/dice
+# постоянная память Маруси, тоже Go
+CGO_ENABLED=0 go build -o examples/plugins/memory/memory ./examples/plugins/memory
 # двусторонний: колонка на C++, сервер на Python
 make -C examples/plugins/speaker-stats CXX=aarch64-linux-gnu-g++ LDFLAGS=-static
 ```
@@ -807,6 +809,7 @@ make -C examples/plugins/speaker-stats CXX=aarch64-linux-gnu-g++ LDFLAGS=-static
 | [ytmusic](examples/plugins/ytmusic) | сервер, Python | музыка с YouTube Music: yt-dlp на сервере, `media.play_url` на колонке, страница с поиском |
 | [ollama](examples/plugins/ollama) | сервер, Python | своя модель (провайдер): история, потоковый ответ, вызовы функций |
 | [piper](examples/plugins/piper) | сервер, Python | офлайн-синтез речи |
+| [memory](examples/plugins/memory) | сервер, Go | постоянная память: «запомни, что меня зовут Дима», факты в системной инструкции, страница для правки |
 
 Плагин на Go — обычная программа:
 
@@ -903,7 +906,8 @@ dbus-monitor --system "type='signal',sender='ru.marusya.Agent',interface='ru.mar
 - **Дополнение к системной инструкции** — поле `instructions` при старте и `host.instructions`
   на ходу: характер, манера речи, знания о доме. Сервер добавляет тексты всех плагинов в
   инструкцию модели и обновляет беседы к следующей реплике. Пример — [mood](examples/plugins/mood):
-  «Маруся, будь пираткой».
+  «Маруся, будь пираткой»; [memory](examples/plugins/memory) так держит в инструкции
+  запомненные факты. Дополнение одно на все колонки сервера.
 - **Вопрос от имени пользователя** — `host.request`: Маруся на колонке отвечает на текст так,
   будто его сказали вслух, может вызывать функции и говорит ответ. `host.say` для сравнения
   просто произносит готовый текст. Подходит для вебхуков («в дверь позвонили — скажи, кто

@@ -95,6 +95,7 @@ type Plugin struct {
 	init     Init
 
 	instructions string
+	initialized  bool // the answer to initialize carries instructions
 	providers    []ProviderSpec
 	provHandlers map[string]ProviderHandler
 	speech       []SpeechSpec
@@ -193,6 +194,7 @@ func (p *Plugin) handle(ctx context.Context, stop context.CancelFunc, method str
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
+		p.initialized = true
 		return InitializeResult{
 			Protocol: ProtocolVersion, Tools: p.tools, Events: p.events,
 			Instructions: p.instructions, Providers: p.providers, Speech: p.speech, HTTP: p.httpSpec,
@@ -380,12 +382,16 @@ func (p *Plugin) Request(ctx context.Context, device, text string) error {
 }
 
 // Instructions sets what the plugin adds to the system instruction of the
-// model, e.g. "Отвечай как пират". Before [Plugin.Run] it is the initial
-// value; later it replaces it on the host. Server only.
+// model, e.g. "Отвечай как пират". Before the plugin is initialized
+// (before [Plugin.Run] or in [Plugin.OnInit]) it is the initial value;
+// later it replaces it on the host. Server only.
 func (p *Plugin) Instructions(ctx context.Context, text string) error {
 	p.mu.Lock()
 	p.instructions = text
 	conn := p.conn
+	if !p.initialized {
+		conn = nil
+	}
 	p.mu.Unlock()
 	if conn == nil {
 		return nil
