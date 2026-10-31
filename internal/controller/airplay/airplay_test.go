@@ -113,7 +113,7 @@ func TestIdleAirPlayDelegates(t *testing.T) {
 	ctx := context.Background()
 	for name, r := range map[string]*fakeRemote{
 		"not running":  {},
-		"no phone":     {running: true, props: map[string]any{"Available": false}},
+		"no phone":     {running: true, props: map[string]any{"Available": false, "PlayerState": "Stopped", "Client": ""}},
 		"disconnected": {running: true, props: map[string]any{"Available": true, "PlayerState": "Paused", "Client": ""}},
 	} {
 		next := &fakeMedia{}
@@ -156,4 +156,20 @@ func (plainMedia) Control(context.Context, models.MediaOperation) error { return
 func (plainMedia) PlayURL(context.Context, string) error                { return nil }
 func (plainMedia) Status(context.Context) (models.MediaStatus, error) {
 	return models.MediaStatus{}, nil
+}
+
+func TestAvailableFalseStillRoutesToPhone(t *testing.T) {
+	r := &fakeRemote{running: true, props: map[string]any{
+		"Available":   false,
+		"PlayerState": "Playing",
+		"Client":      "192.168.1.5",
+	}}
+	next := &fakeMedia{}
+	p := &Player{Next: next, Remote: r}
+	if err := p.Control(context.Background(), models.MediaNext); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.calls, []string{"Next"}) || len(next.ops) != 0 {
+		t.Fatalf("airplay calls %v, next %v; want Next on AirPlay", r.calls, next.ops)
+	}
 }

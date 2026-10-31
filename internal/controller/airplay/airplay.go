@@ -97,7 +97,7 @@ func (p *Player) remote() Remote {
 
 // State is what shairport-sync is doing.
 type State struct {
-	// Available means shairport-sync runs and a phone is connected.
+	// Available means shairport-sync runs.
 	Available bool
 	// PlayerState is "Playing", "Paused" or "Stopped".
 	PlayerState string
@@ -133,20 +133,18 @@ func (s State) Track() string {
 func (p *Player) State(ctx context.Context) (State, error) {
 	r := p.remote()
 	var st State
-	v, err := r.Property(ctx, "Available")
+	// This shairport-sync build reports Available=false even while a phone
+	// plays; PlayerState and Client are the reliable signals. A missing bus
+	// name still means shairport-sync is not running.
+	v, err := r.Property(ctx, "PlayerState")
 	if errors.Is(err, ErrUnavailable) {
 		return st, nil
 	}
 	if err != nil {
 		return st, err
 	}
-	st.Available, _ = v.Value().(bool)
-	if !st.Available {
-		return st, nil
-	}
-	if v, err := r.Property(ctx, "PlayerState"); err == nil {
-		st.PlayerState, _ = v.Value().(string)
-	}
+	st.Available = true
+	st.PlayerState, _ = v.Value().(string)
 	if v, err := r.Property(ctx, "Client"); err == nil {
 		st.Client, _ = v.Value().(string)
 	}
