@@ -18,7 +18,8 @@
 // The speaker half reads the metadata pipe of shairport-sync (the AirPlay
 // receiver the panel installs on speakers), lights the LED ring while a
 // phone is connected or plays, keeps the phone's volume slider and the
-// speaker's volume together and sends what plays to the server half. The server half
+// speaker's volume together (unless capsule-mini-tweaker runs: then the
+// bundle's ap2-bridge does it) and sends what plays to the server half. The server half
 // remembers it for every speaker and gives the model the airplay_status
 // function: "Маруся, что играет по эйрплею на кухне?".
 //
@@ -88,9 +89,13 @@ func speaker(p *pluginsdk.Plugin) {
 		Color string `json:"color"`
 	}{Pipe: "/tmp/shairport-sync-metadata", Color: "ffffff"}
 	vol := NewVolumes()
+	vol.Bridged = bridged
 	p.OnInit(func(context.Context, pluginsdk.Init) error {
 		if err := p.Config(&cfg); err != nil {
 			return err
+		}
+		if bridged() {
+			p.Log("info", "%s found: the AirPlay bundle syncs the volume, the plugin only lights the ring", tweakerSocket)
 		}
 		go follow(p, cfg.Pipe, cfg.Color, vol)
 		return nil
@@ -110,9 +115,23 @@ func speaker(p *pluginsdk.Plugin) {
 	}, pluginsdk.EventVolume)
 }
 
+// tweakerSocket is the IPC of capsule-mini-tweaker. With it the AirPlay
+// bundle installs its own two-way volume bridge (ap2-bridge), and two
+// bridges would answer each other's echoes.
+const tweakerSocket = "/run/capsule-controls.sock"
+
+// bridged reports whether the bundle's bridge syncs the volume already.
+func bridged() bool {
+	fi, err := os.Stat(tweakerSocket)
+	return err == nil && fi.Mode()&os.ModeSocket != 0
+}
+
 // Volumes keeps the phone's slider and the speaker's volume together
 // without sending a change back to where it came from.
 type Volumes struct {
+	// Bridged, when it reports true, leaves the volume to someone else.
+	Bridged func() bool
+
 	mu        sync.Mutex
 	level     int // the level both sides have; -1 when unknown
 	connected bool
@@ -121,9 +140,14 @@ type Volumes struct {
 // NewVolumes returns Volumes before any phone connected.
 func NewVolumes() *Volumes { return &Volumes{level: -1} }
 
+func (v *Volumes) off() bool { return v.Bridged != nil && v.Bridged() }
+
 // phone reports whether a level from the phone's slider is new to the
 // speaker and has to be set.
 func (v *Volumes) phone(level int) bool {
+	if v.off() {
+		return false
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if level == v.level {
@@ -136,6 +160,9 @@ func (v *Volumes) phone(level int) bool {
 // speaker reports whether a new level of the speaker has to go to the
 // phone: one is connected and the level did not come from it.
 func (v *Volumes) speaker(level int) bool {
+	if v.off() {
+		return false
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if !v.connected || level == v.level {

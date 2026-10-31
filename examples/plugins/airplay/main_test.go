@@ -120,3 +120,12 @@ func TestVolumesNoEcho(t *testing.T) {
 		t.Error("new phone's level ignored")
 	}
 }
+
+func TestVolumesBridged(t *testing.T) {
+	v := NewVolumes()
+	v.Bridged = func() bool { return true }
+	v.setConnected(true)
+	if v.phone(30) || v.speaker(60) {
+		t.Error("volume synced although the bundle's bridge does it")
+	}
+}
