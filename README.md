@@ -1047,5 +1047,5 @@ WebSocket `GET /v1/stream`, авторизация `Authorization: Bearer <token
 
 ## Лицензия
 
-[Apache License 2.0](LICENSE). Copyright 2026 Dmitri 'yawaflua' Shimanski and project contributors (см. [NOTICE](NOTICE)).
+[Apache License 2.0](LICENSE). Copyright 2026 The Marusya-Gemini Authors: Dmitri 'yawaflua' Shimanski и контрибьюторы из [AUTHORS](AUTHORS) (см. [NOTICE](NOTICE)).
 Как предложить изменения — в [CONTRIBUTING.md](CONTRIBUTING.md).
