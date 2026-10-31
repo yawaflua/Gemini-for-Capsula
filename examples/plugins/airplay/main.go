@@ -25,12 +25,11 @@
 //
 //	metadata = { enabled = "yes"; include_cover_art = "no"; pipe_name = "/tmp/shairport-sync-metadata"; };
 //
-// Build for the speaker (ARMv7) and the server in one go:
+// The speaker and the server differ in architecture, so the same code is
+// built twice (see plugin.json):
 //
-//	GOOS=linux GOARCH=arm GOARM=7 go build -o examples/plugins/airplay/airplay ./examples/plugins/airplay
-//
-// A server on amd64 needs its own build; for a real plugin ship the
-// halves as two binaries (see plugin.json).
+//	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o examples/plugins/airplay/airplay-agent ./examples/plugins/airplay
+//	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o examples/plugins/airplay/airplay-server ./examples/plugins/airplay
 package main
 
 import (
