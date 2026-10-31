@@ -384,6 +384,9 @@ func run() error {
 	if *pluginsDir != "" {
 		plugins = newSpeakerPlugins(*pluginsDir, pluginsdk.Device{ID: id, Language: *language, Location: *location, TimeZone: *timezone}, dispatcher, log)
 		indicators = append(indicators, plugins)
+		if dispatcher.Volume != nil {
+			dispatcher.Volume = &controller.ObservedVolume{Volume: dispatcher.Volume, OnChange: plugins.Volume}
+		}
 	}
 	deps := agent.Deps{
 		Capture:    alsa.NewCapture(alsaCfg, models.DeviceInputFormat),

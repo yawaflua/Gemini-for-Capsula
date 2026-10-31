@@ -1,7 +1,7 @@
 {
   "id": "airplay",
   "name": "AirPlay на кольце",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Пример двустороннего плагина на Go: на колонке следит за shairport-sync, подсвечивает кольцо, пока телефон играет по AirPlay, и сообщает серверу, что играет; на сервере даёт модели функцию airplay_status.",
   "agent": {"command": ["./airplay-agent"]},
   "server": {"command": ["./airplay-server"]},

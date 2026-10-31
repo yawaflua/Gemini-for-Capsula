@@ -219,6 +219,10 @@ const (
 	// "idle", "listening", "thinking", "speaking", "error",
 	// "disconnected" or "announcing".
 	EventState = "state"
+	// EventVolume is a change of the speaker's volume by anyone: voice,
+	// keys, the panel or a plugin. Data["level"] is 0..100 and
+	// Data["muted"] is a bool.
+	EventVolume = "volume"
 )
 
 // Event is sent with [MethodEvent].

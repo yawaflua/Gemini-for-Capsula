@@ -92,8 +92,11 @@ Go и Python SDK умеют всё, что описано ниже. C++ SDK ум
 - `command`, `skill` — выполнено действие колонки или серверная функция;
 - `wake` — сработало ключевое слово.
 
-На колонке есть одно событие, `state`: `data.state` принимает значения `idle`, `listening`,
-`thinking`, `speaking`, `error`, `disconnected`, `announcing`.
+События колонки:
+- `state` — что делает Маруся: `data.state` принимает значения `idle`, `listening`,
+  `thinking`, `speaking`, `error`, `disconnected`, `announcing`;
+- `volume` — громкость колонки изменилась (голосом, кнопками, из панели или плагином):
+  `data.level` от 0 до 100, `data.muted`.
 
 **`message`** (уведомление) — данные от другой половины плагина: `{"device":"kitchen","data":...}`.
 
