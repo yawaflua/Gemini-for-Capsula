@@ -76,10 +76,16 @@ type Spec struct {
 	Kind Kind   `json:"kind"`
 	// BaseURL overrides the endpoint of the kind, for compatible servers
 	// (OpenRouter, Ollama, a gateway, ...).
-	BaseURL string `json:"base_url,omitempty"`
-	APIKey  string `json:"api_key,omitempty"`
-	Model   string `json:"model,omitempty"`
-	Voice   string `json:"voice,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Voice    string `json:"voice,omitempty"`
+	STTModel string `json:"stt_model,omitempty"`
+	TTSModel string `json:"tts_model,omitempty"`
+	// STTProvider and TTSProvider split speech between two providers. When
+	// both are set they take precedence over Speech.
+	STTProvider string `json:"stt_provider,omitempty"`
+	TTSProvider string `json:"tts_provider,omitempty"`
 	// Speech chooses speech recognition and synthesis for pipeline kinds:
 	// "" uses the server's Gemini speech, SpeechSelf this provider's own
 	// OpenAI compatible audio endpoints, anything else is the ID of a
@@ -117,15 +123,19 @@ func (s *Spec) validate(others []Spec) error {
 	s.APIKey = strings.TrimSpace(s.APIKey)
 	s.Model = strings.TrimSpace(s.Model)
 	s.Voice = strings.TrimSpace(s.Voice)
+	s.STTModel = strings.TrimSpace(s.STTModel)
+	s.TTSModel = strings.TrimSpace(s.TTSModel)
+	s.STTProvider = strings.TrimSpace(s.STTProvider)
+	s.TTSProvider = strings.TrimSpace(s.TTSProvider)
 	s.Speech = strings.TrimSpace(s.Speech)
 	switch {
 	case s.ID == DefaultID || !idRE.MatchString(s.ID):
 		return fmt.Errorf("недопустимый идентификатор %q: нужны латинские буквы, цифры, - и _", s.ID)
 	case s.Name == "" || len(s.Name) > maxName:
 		return errors.New("нужно название до 64 символов")
-	case len(s.BaseURL) > maxURL || len(s.APIKey) > maxKey || len(s.Model) > 128 || len(s.Voice) > 64:
+	case len(s.BaseURL) > maxURL || len(s.APIKey) > maxKey || len(s.Model) > 128 || len(s.Voice) > 64 || len(s.STTModel) > 128 || len(s.TTSModel) > 128:
 		return errors.New("слишком длинное значение")
-	case strings.ContainsAny(s.Model+s.Voice, " \t\n"):
+	case strings.ContainsAny(s.Model+s.Voice+s.STTModel+s.TTSModel, " \t\n"):
 		return errors.New("модель и голос пишутся без пробелов")
 	}
 	if s.BaseURL != "" && !strings.Contains(s.BaseURL, "://") {
@@ -142,6 +152,23 @@ func (s *Spec) validate(others []Spec) error {
 		return errors.New("модель провайдера из плагина пишется как «плагин/провайдер»")
 	}
 	if !info.Pipeline {
+		s.Speech = ""
+		s.STTProvider, s.TTSProvider = "", ""
+		return nil
+	}
+	if s.STTProvider != "" || s.TTSProvider != "" {
+		if s.STTProvider == "" || s.TTSProvider == "" {
+			return errors.New("stt_provider и tts_provider задаются вместе")
+		}
+		for _, id := range []string{s.STTProvider, s.TTSProvider} {
+			i := slices.IndexFunc(others, func(o Spec) bool { return o.ID == id })
+			if i < 0 || id == s.ID {
+				return fmt.Errorf("нет провайдера %q для речи", id)
+			}
+			if k := others[i].Kind; k == KindAnthropic {
+				return errors.New("речь умеют распознавать только провайдеры Gemini и OpenAI")
+			}
+		}
 		s.Speech = ""
 		return nil
 	}
