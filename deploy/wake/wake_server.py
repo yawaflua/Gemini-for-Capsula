@@ -10,9 +10,12 @@ spotter answers {"keyword": "...", "engine": "...", "score": ...}.
 
 Keywords are routed by script:
 
-* Cyrillic -> Vosk (small Russian model) with a grammar of just the keywords.
-  Fast (~0.3 s) and changeable instantly, but the words must be in the
-  model's vocabulary; unknown ones are reported back as unsupported.
+* Cyrillic -> Vosk (small Russian model). A keyword-only grammar spots
+  candidates quickly (~0.3 s), then the full vocabulary re-decodes the last
+  seconds of audio to confirm them. The grammar alone is not enough: it
+  forces any speech into the keyword, so «сегодня хорошая погода» was heard
+  as «маруся» with confidence 1.0. The words must be in the model's
+  vocabulary; unknown ones are reported back as unsupported.
 * Hebrew and everything else -> faster-whisper on short speech segments,
   fuzzy matched against the keywords. Slower (the utterance has to end), but
   any word in any of Whisper's languages works.
@@ -51,6 +54,8 @@ COOLDOWN = float(os.environ.get("WAKE_COOLDOWN", "1.5"))
 
 # One Whisper inference at a time for all speakers: it is CPU heavy.
 whisper_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+# Candidate verification is short but must not block the event loop.
+vosk_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 def script_of(word: str) -> str:
@@ -116,16 +121,35 @@ def whisper_model():
 
 
 class VoskSpotter:
+    """Spots keywords with a small grammar, then verifies them.
+
+    The grammar is fast but forces any speech into the keywords, so a
+    candidate is re-decoded with the full Vosk vocabulary: unrelated phrases
+    come out as themselves and are dropped. Verification runs only on
+    candidates, in a worker thread, so idle audio stays cheap and the event
+    loop keeps accepting connections.
+    """
+
     engine = "vosk"
+    BUFFER = 2.0  # seconds of audio kept for verification
 
     def __init__(self, keywords, rate):
         from vosk import KaldiRecognizer
 
         self.keywords = keywords
+        self.norm = [normalize(k) for k in keywords]
+        self.rate = rate
         rec = KaldiRecognizer(vosk_model(), rate, json.dumps(keywords + ["[unk]"], ensure_ascii=False))
         rec.SetWords(True)
         self.rec = rec
         self.since = None
+        self.buf = collections.deque()
+        self.buf_bytes = 0
+        self.max_bytes = int(rate * self.BUFFER) * 2
+        self.buf_lock = threading.Lock()
+        self.verify_lock = threading.Lock()
+        self.verifying = False
+        self.mute_until = 0.0  # audio time; suppresses repeats of one phrase
 
     @staticmethod
     def supports(word: str):
@@ -140,15 +164,63 @@ class VoskSpotter:
         padded = f" {text} "
         return next((k for k in self.keywords if f" {k} " in padded), None)
 
+    def _remember(self, pcm):
+        with self.buf_lock:
+            self.buf.append(pcm)
+            self.buf_bytes += len(pcm)
+            while self.buf_bytes > self.max_bytes and self.buf:
+                self.buf_bytes -= len(self.buf.popleft())
+
+    def _verify(self, kw, at, emit):
+        try:
+            from vosk import KaldiRecognizer
+
+            with self.buf_lock:
+                pcm = b"".join(self.buf)
+            rec = KaldiRecognizer(vosk_model(), self.rate)
+            rec.SetWords(True)
+            rec.AcceptWaveform(pcm)
+            res = json.loads(rec.FinalResult()).get("result", [])
+            tokens, confs = [], []
+            for w in res:
+                for t in normalize(w["word"]):
+                    tokens.append(t)
+                    confs.append(w.get("conf", 0.0))
+            toks = self.norm[self.keywords.index(kw)]
+            n = len(toks)
+            best = 0.0
+            for i in range(len(tokens) - n + 1):
+                if tokens[i:i + n] == toks:
+                    best = max(best, min(confs[i:i + n]))
+            log.debug("verified %r as %r (%.2f)", kw, " ".join(tokens), best)
+            if best >= VOSK_MIN_CONF:
+                # The grammar keeps forcing the rest of the phrase into the
+                # keyword after Reset, so ignore its candidates for a while.
+                with self.verify_lock:
+                    self.mute_until = at + 2.0
+                emit(kw, self.engine, round(best, 2), at)
+        except Exception:  # noqa: BLE001 - never kill the stream
+            log.exception("vosk verify")
+        finally:
+            with self.verify_lock:
+                self.verifying = False
+
+    def _submit(self, kw, at, emit):
+        with self.verify_lock:
+            if self.verifying or at < self.mute_until:
+                return
+            self.verifying = True
+        vosk_pool.submit(self._verify, kw, at, emit)
+
     def feed(self, pcm, now, emit):
+        self._remember(pcm)
         if self.rec.AcceptWaveform(pcm):
             self.since = None
             res = json.loads(self.rec.Result()).get("result", [])
             words = [w for w in res if w.get("conf", 0) >= VOSK_MIN_CONF]
             kw = self._hit(" ".join(w["word"] for w in words))
             if kw:
-                conf = min(w["conf"] for w in res if w["word"] in kw.split())
-                emit(kw, self.engine, round(conf, 2), now)
+                self._submit(kw, now, emit)
             return
         kw = self._hit(json.loads(self.rec.PartialResult()).get("partial", ""))
         if not kw:
@@ -158,7 +230,7 @@ class VoskSpotter:
         elif now - self.since >= VOSK_HOLD:
             self.rec.Reset()
             self.since = None
-            emit(kw, self.engine, None, now)
+            self._submit(kw, now, emit)
 
 
 HEBREW_MARKS = re.compile("[֑-ׇ]")  # niqqud and cantillation
