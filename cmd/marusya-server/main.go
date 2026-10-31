@@ -59,6 +59,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/skills/homeassistant"
 	"github.com/yawaflua/marusya-gemini/internal/skills/spotify"
 	"github.com/yawaflua/marusya-gemini/internal/skills/weather"
+	"github.com/yawaflua/marusya-gemini/internal/skills/yandexhome"
 	"github.com/yawaflua/marusya-gemini/internal/speech"
 	"github.com/yawaflua/marusya-gemini/internal/speech/geminispeech"
 	"github.com/yawaflua/marusya-gemini/internal/speech/openaispeech"
@@ -78,6 +79,7 @@ var (
 	haURL      = flag.String("ha_url", config.Env("MARUSYA_HA_URL", ""), "Home Assistant URL, e.g. http://homeassistant.local:8123: enables the home_find and home_control skills.")
 	haToken    = flag.String("ha_token", config.Env("MARUSYA_HA_TOKEN", ""), "Home Assistant long-lived access token.")
 	haDomains  = flag.String("ha_domains", config.Env("MARUSYA_HA_DOMAINS", ""), "Comma separated entity domains that may be controlled by voice; empty: lights, switches, covers, climate, media players, scenes, scripts... (no locks or alarms).")
+	yaToken    = flag.String("yandex_token", config.Env("MARUSYA_YA_TOKEN", ""), "Yandex Smart Home OAuth token with iot:view and iot:control: enables the yandex_home_find, yandex_home_control and yandex_home_scene skills.")
 	spID       = flag.String("spotify_client_id", config.Env("MARUSYA_SPOTIFY_CLIENT_ID", ""), "Client ID of a Spotify app (developer.spotify.com): enables the spotify_play skill. The server only searches; speakers play in spotifyd, signed in to their owner's Premium account.")
 	spSecret   = flag.String("spotify_client_secret", config.Env("MARUSYA_SPOTIFY_CLIENT_SECRET", ""), "Client secret of the Spotify app.")
 	spMarket   = flag.String("spotify_market", config.Env("MARUSYA_SPOTIFY_MARKET", ""), "ISO country code, e.g. IL: find only music playable there. Empty searches every country.")
@@ -231,6 +233,11 @@ func run() error {
 		}
 		set = append(set, ha.Skills()...)
 		log.Info("Home Assistant skills enabled", "url", *haURL, "domains", cmp.Or(*haDomains, strings.Join(homeassistant.DefaultDomains, ",")))
+	}
+	if *yaToken != "" {
+		ya := &yandexhome.Client{Token: *yaToken}
+		set = append(set, ya.Skills()...)
+		log.Info("Yandex Smart Home skills enabled")
 	}
 	// spotify_play is offered to the model while the app's credentials are
 	// set, here or in the web panel.
