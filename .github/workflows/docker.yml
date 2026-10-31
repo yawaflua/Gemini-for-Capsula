@@ -19,8 +19,22 @@ on:
   push:
     branches: [master, stage]
     tags: ["v*"]
+    paths-ignore:
+      - "registry/**"
+      - "**.md"
+      - "**.yml"
+      - "**.yaml"
+      - "LICENSE"
+      - "NOTICE"
   pull_request:
     branches: [master, stage]
+    paths-ignore:
+      - "registry/**"
+      - "**.md"
+      - "**.yml"
+      - "**.yaml"
+      - "LICENSE"
+      - "NOTICE"
   workflow_dispatch:
 
 concurrency:

@@ -1048,3 +1048,8 @@ WebSocket `GET /v1/stream`, авторизация `Authorization: Bearer <token
 Модели передаются только инструменты, которые устройство объявило в `hello.capabilities`.
 Из действий кольца, экрана и датчиков модель получает только `ring_set`; `ring.reset`,
 `display.show`, `display.reset` и `sensors.get` доступны панели, но не модели.
+
+## Лицензия
+
+[Apache License 2.0](LICENSE). Copyright 2026 The Marusya-Gemini Authors: Dmitri 'yawaflua' Shimanski и контрибьюторы из [AUTHORS](AUTHORS) (см. [NOTICE](NOTICE)).
+Как предложить изменения — в [CONTRIBUTING.md](CONTRIBUTING.md).
