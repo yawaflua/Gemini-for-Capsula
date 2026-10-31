@@ -16,6 +16,8 @@ MARUSYA_TIMEZONE=
 MARUSYA_CAPTURE_DEVICE=default
 MARUSYA_PLAYBACK_DEVICE=default
 MARUSYA_MIXER_CONTROL=Master
+# Set to 1 on a VK Capsula Mini to control volume through capsule-ipc.
+MARUSYA_CAPSULE_IPC=
 
 # Keyword spotter: reads 16 kHz mono S16LE on stdin, prints a line per hit.
 MARUSYA_WAKE_COMMAND=
