@@ -464,3 +464,4 @@ body:not(.tunable) .tunable { display: none; }
 .catalog-search input { flex: 1 1 auto; min-width: 0; }
 .catalog-speakers { flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
 .catalog-speaker { gap: 6px; align-items: center; }
+.badge[title] { cursor: help; }

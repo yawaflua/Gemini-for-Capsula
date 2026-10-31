@@ -43,6 +43,11 @@ type Config struct {
 	ServerURL string
 	// Token authenticates the device.
 	Token string
+	// Version is the agent's build, reported to the server in the hello.
+	Version string
+	// AutoUpdate reports that the agent updates itself from the server
+	// (see OnConnected); the panel then says it is updating, not outdated.
+	AutoUpdate bool
 	// Language is a BCP-47 code, e.g. "ru-RU".
 	Language string
 	// Location is where the speaker is, e.g. "Ashdod" (for time/weather).
@@ -322,6 +327,8 @@ func (a *Agent) handshake(ctx context.Context, conn *transport.Conn) (*models.Re
 			TimeZone:        a.cfg.TimeZone,
 			Features:        a.features(),
 			PluginTools:     a.pluginTools(),
+			AgentVersion:    a.cfg.Version,
+			AutoUpdate:      a.cfg.AutoUpdate,
 		},
 	})
 	if err != nil {

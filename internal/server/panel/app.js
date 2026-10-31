@@ -85,6 +85,17 @@ function ago(iso) {
   if (s < 86400) return `${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} мин назад`;
   return `${Math.floor(s / 86400)} дн назад`;
 }
+// The agent downloads the new binary on connection and restarts when idle;
+// after this long an "updating" agent is shown as outdated.
+const updateGrace = 3 * 60 * 1000;
+
+// versionStatus says whether the agent is the server's build: "" if it is,
+// "updating" while an auto-updating agent catches up, "outdated" otherwise.
+function versionStatus(d) {
+  if (!d.outdated) return "";
+  return d.auto_update && Date.now() - new Date(d.connected) < updateGrace ? "updating" : "outdated";
+}
+
 const stateName = { idle: "ждёт «Маруся»", listening: "слушает", thinking: "думает", announcing: "объявляет" };
 
 const actionNames = {
@@ -382,7 +393,7 @@ function renderDevices() {
     const item = el("button", { class: "device-item" + (d.session === state.selected ? " sel" : ""), onclick: () => selectDevice(d.session) },
       el("span", { class: "dot " + d.state }),
       el("strong", { text: d.device_id || "колонка" }),
-      el("small", { text: `${stateName[d.state] || d.state} · ${d.remote.replace(/:\d+$/, "")}` }));
+      el("small", { text: [stateName[d.state] || d.state, d.remote.replace(/:\d+$/, ""), { outdated: "версия устарела", updating: "обновляется" }[versionStatus(d)]].filter(Boolean).join(" · ") }));
     list.append(item);
   }
   renderDetail();
@@ -426,6 +437,18 @@ function renderDetail() {
   const badge = f(box, "state");
   badge.textContent = stateName[d.state] || d.state;
   badge.className = "badge " + d.state;
+  const ver = f(box, "version");
+  const vs = versionStatus(d);
+  ver.hidden = !vs;
+  if (vs === "updating") {
+    ver.className = "badge thinking";
+    ver.textContent = "обновляется";
+    ver.title = `Агент ${d.agent_version || "старой версии"} скачивает версию сервера ${state.info.version} и перезапустится, когда колонка освободится.`;
+  } else if (vs === "outdated") {
+    ver.className = "badge failed";
+    ver.textContent = "Версия устарела";
+    ver.title = "Перезагрузите колонку или пропишите в rc-service marusya-agent restart";
+  }
 
   const eff = d.effective || {};
   const langs = [eff.language || d.language || state.info.settings.language, eff.extra_languages].filter(Boolean).join(", ");
@@ -437,6 +460,7 @@ function renderDetail() {
     ["Языки", langs],
     ["Вопросов", d.last_turn ? `${d.turns}, последний ${ago(d.last_turn)}` : String(d.turns)],
     ["Сессия модели", d.model_session ? "открыта (помнит разговор)" : "закрыта"],
+    ["Версия агента", (d.agent_version || "неизвестна") + (d.outdated ? ` (сервер ${state.info.version})` : "") + (d.auto_update ? " · OTA" : "")],
   ];
   if (d.wake) {
     const words = state.info.settings.wake_words;
@@ -1406,6 +1430,6 @@ $("#catalog-form").addEventListener("submit", (e) => {
 });
 
 // Refresh relative times.
-setInterval(() => { if (!$("#app").hidden) renderDetail(); }, 30000);
+setInterval(() => { if (!$("#app").hidden) renderDevices(); }, 30000);
 
 boot().catch((ex) => { if (ex.status !== 401) toast(ex.message, true); });

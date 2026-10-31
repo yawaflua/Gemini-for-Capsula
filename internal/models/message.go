@@ -248,6 +248,12 @@ type Hello struct {
 	Features []Feature `json:"features,omitempty"`
 	// PluginTools are the functions of the plugins on the speaker.
 	PluginTools []PluginTool `json:"plugin_tools,omitempty"`
+	// AgentVersion is the build of the agent, e.g. "c01c399". The server
+	// compares it with its own: both are built from the same commit.
+	AgentVersion string `json:"agent_version,omitempty"`
+	// AutoUpdate reports that the agent downloads the server's agent binary
+	// on every connection and restarts into it.
+	AutoUpdate bool `json:"auto_update,omitempty"`
 }
 
 // Ready is sent by the server once the device is accepted.

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/yawaflua/marusya-gemini/internal/buildinfo"
 	"log/slog"
 	"slices"
 	"strings"
@@ -128,6 +129,13 @@ type DeviceInfo struct {
 	// Wake is the state of server-side wake word spotting: "off", "on" or
 	// "unavailable"; empty if the server cannot do it for this device.
 	Wake string `json:"wake,omitempty"`
+	// AgentVersion is the build of the agent; empty for agents that are
+	// too old to report it.
+	AgentVersion string `json:"agent_version,omitempty"`
+	// Outdated reports that the agent is not the server's build.
+	Outdated bool `json:"outdated,omitempty"`
+	// AutoUpdate reports that the agent updates itself on connection.
+	AutoUpdate bool `json:"auto_update,omitempty"`
 }
 
 func (d *deviceSession) info() DeviceInfo {
@@ -169,6 +177,9 @@ func (d *deviceSession) info() DeviceInfo {
 		Turns:        d.turns,
 		LastTurn:     d.lastTurn,
 		CanSay:       provider.AcceptsText(d.cfg.Provider) && slices.Contains(d.hello.Features, models.FeatureRemoteTurn),
+		AgentVersion: d.hello.AgentVersion,
+		Outdated:     buildinfo.Known(d.cfg.Version) && d.hello.AgentVersion != d.cfg.Version,
+		AutoUpdate:   d.hello.AutoUpdate,
 	}
 }
 
