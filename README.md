@@ -199,9 +199,10 @@ docker compose -f deploy/server/docker-compose.yaml up -d --build
 docker compose -f deploy/server/docker-compose.yaml logs -f
 ```
 
-Готовые образы для amd64 и arm64 CI собирает из `master` и тегов `v*`
+Готовые образы для amd64 и arm64 CI собирает из `master`, `stage` и тегов `v*`
 (`.github/workflows/docker.yml`): `ghcr.io/yawaflua/marusya-server` и
-`ghcr.io/yawaflua/marusya-wake`. Чтобы не собирать локально:
+`ghcr.io/yawaflua/marusya-wake`. Тег `latest` соответствует `master`, тег `dev`
+соответствует `stage`. Чтобы не собирать локально:
 
 ```bash
 docker compose -f deploy/server/docker-compose.yaml pull
