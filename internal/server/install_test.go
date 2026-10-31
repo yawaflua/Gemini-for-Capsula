@@ -291,6 +291,11 @@ func TestInstallAirPlayAndSpotify(t *testing.T) {
 	req := speakerRequest(t, addr, "pw")
 	req.Name = "Кухня Маши"
 	req.AirPlay, req.Spotify = true, true
+	// The bundle's stock config: no metadata, shairport-sync's own volume.
+	conf := filepath.Join(root, "etc/shairport-sync.conf")
+	if err := os.WriteFile(conf, []byte("general = {\n\tname = \"Кухня Маши\";\n};\n\nalsa = {\n\toutput_device = \"default\";\n};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	res, login, err := fakeInstaller(t, "tok").run(context.Background(), req)
 	if err != nil {
@@ -301,6 +306,14 @@ func TestInstallAirPlayAndSpotify(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "INSTALL_PASS") {
 		t.Errorf("output lacks the AirPlay installer's:\n%s", res.Output)
+	}
+	got := readFile(t, conf)
+	if !strings.Contains(got, "general = {\n\tignore_volume_control = \"yes\";\n\tname") ||
+		!strings.Contains(got, `pipe_name = "/tmp/shairport-sync-metadata";`) {
+		t.Errorf("shairport-sync.conf:\n%s", got)
+	}
+	if rc := readFile(t, filepath.Join(root, "rc.log")); !strings.Contains(rc, "shairport-sync restart") {
+		t.Errorf("shairport-sync not restarted:\n%s", rc)
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "apk.log")); err == nil {
