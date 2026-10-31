@@ -440,3 +440,41 @@ func TestPanelSettings(t *testing.T) {
 		t.Errorf("settings after reset = %+v", got)
 	}
 }
+
+// TestAgentVersion checks that the panel flags an agent that is not the
+// server's build.
+func TestAgentVersion(t *testing.T) {
+	for _, tc := range []struct {
+		server, agent string
+		outdated      bool
+	}{
+		{"c01c399", "c01c399", false},
+		{"c01c399", "f6e2cf3", true},
+		{"c01c399", "", true}, // too old to report it
+		{"dev", "f6e2cf3", false},
+	} {
+		e := newPanelEnv(t, "")
+		e.srv.cfg.Version = tc.server
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn, err := transport.Dial(ctx, "ws"+strings.TrimPrefix(e.ts.URL, "http")+transport.Path, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = conn.Send(ctx, &models.Message{Type: models.TypeHello, Hello: &models.Hello{
+			ProtocolVersion: models.ProtocolVersion, DeviceID: "kitchen", InputFormat: models.DeviceInputFormat,
+			AgentVersion: tc.agent, AutoUpdate: true,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Read(ctx); err != nil {
+			t.Fatal(err)
+		}
+		d := e.waitDevice()
+		if d.Outdated != tc.outdated || d.AgentVersion != tc.agent || !d.AutoUpdate {
+			t.Errorf("server %q, agent %q: %+v", tc.server, tc.agent, d)
+		}
+		conn.Close("done")
+		cancel()
+	}
+}

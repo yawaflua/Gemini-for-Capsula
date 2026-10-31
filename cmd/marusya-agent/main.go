@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/yawaflua/marusya-gemini/internal/buildinfo"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -134,6 +135,7 @@ var (
 
 func main() {
 	flag.Parse()
+	version = buildinfo.Version(version)
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "marusya-agent:", err)
 		os.Exit(1)
@@ -403,16 +405,18 @@ func run() error {
 		})
 	}
 	a = agent.New(agent.Config{
-		DeviceID:  id,
-		ServerURL: *serverURL,
-		Token:     *token,
-		Language:  *language,
-		Location:  *location,
-		TimeZone:  *timezone,
-		VAD:       vadCfg,
-		Earcons:   *earcons,
-		FollowUp:  *followUp,
-		DuckMedia: *duckMedia,
+		DeviceID:   id,
+		ServerURL:  *serverURL,
+		Token:      *token,
+		Version:    version,
+		AutoUpdate: *autoUpdate,
+		Language:   *language,
+		Location:   *location,
+		TimeZone:   *timezone,
+		VAD:        vadCfg,
+		Earcons:    *earcons,
+		FollowUp:   *followUp,
+		DuckMedia:  *duckMedia,
 
 		PluginsDir: *pluginsDir,
 

@@ -27,6 +27,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/yawaflua/marusya-gemini/internal/buildinfo"
 	"log/slog"
 	"net"
 	"net/http"
@@ -131,6 +132,7 @@ var (
 
 func main() {
 	flag.Parse()
+	version = buildinfo.Version(version)
 	if *healthcheck {
 		os.Exit(checkHealth())
 	}
