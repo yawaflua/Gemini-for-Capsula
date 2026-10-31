@@ -11,6 +11,9 @@
 # "sha-<short>" from every push. Pull requests only build, nothing is pushed.
 # Each platform is built on a native runner (no QEMU), then the digests are
 # merged into one multi-arch manifest.
+#
+# The plugin catalog under registry/ has its own workflow (registry.yml).
+# Pushes that only touch docs, YAML or the license build nothing.
 
 name: docker
 
@@ -18,8 +21,22 @@ on:
   push:
     branches: [master]
     tags: ["v*"]
+    paths-ignore:
+      - "registry/**"
+      - "**.md"
+      - "**.yml"
+      - "**.yaml"
+      - "LICENSE"
+      - "NOTICE"
   pull_request:
-    branches: [master]
+    branches: [master, stage]
+    paths-ignore:
+      - "registry/**"
+      - "**.md"
+      - "**.yml"
+      - "**.yaml"
+      - "LICENSE"
+      - "NOTICE"
   workflow_dispatch:
 
 concurrency:

@@ -1,0 +1,164 @@
+# Copyright 2026 The Marusya-Gemini Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds the plugin catalog (registry/: Go API + Svelte site in one image)
+# for linux/amd64 and linux/arm64 and pushes it to GitHub Container Registry:
+#
+#   ghcr.io/<owner>/marusya-registry
+#
+# Runs only when something under registry/ changes (docs and YAML aside).
+# Tags: "latest" and "master" from master, "sha-<short>" from every push.
+# Pull requests only build, nothing is pushed.
+
+name: registry
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "registry/**"
+      - "!**.md"
+      - "!**.yml"
+      - "!**.yaml"
+  pull_request:
+    branches: [master, stage]
+    paths:
+      - "registry/**"
+      - "!**.md"
+      - "!**.yml"
+      - "!**.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: registry-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: marusya-registry
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: registry/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: registry/backend/go.mod
+          cache-dependency-path: registry/backend/go.sum
+      - run: go vet ./...
+      - run: go test -race -timeout 5m ./...
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name
+        id: vars
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.vars.outputs.image }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: registry
+          file: registry/Dockerfile
+          platforms: linux/${{ matrix.platform.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}-${{ matrix.platform.arch }}
+          outputs: >-
+            ${{ github.event_name == 'pull_request'
+                && 'type=cacheonly'
+                || format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.vars.outputs.image) }}
+
+      - if: github.event_name != 'pull_request'
+        name: Export digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.IMAGE_NAME }}-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ env.IMAGE_NAME }}-*
+          merge-multiple: true
+
+      - id: vars
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ steps.vars.outputs.image }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: docker buildx imagetools inspect ${{ steps.vars.outputs.image }}:${{ steps.meta.outputs.version }}
