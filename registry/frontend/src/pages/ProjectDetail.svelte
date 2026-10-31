@@ -149,7 +149,7 @@
         <span class="project-large-mark">{project.name.slice(0, 2).toUpperCase()}<i></i></span>
         <div>
           <div class="project-heading-line"><h1>{project.name}</h1>{#if owner}<Status status={project.status}/>{/if}</div>
-          <p class="project-slug">/mod/{project.slug}</p>
+          <p class="project-slug">/project/{project.slug}</p>
           <p>{project.description || $t('Описание не добавлено')}</p>
         </div>
       </div>
@@ -249,7 +249,7 @@
         <label class="field"><span>{$t('Название')}</span><input bind:value={editName} required maxlength="100"/></label>
         <label class="field"><span>Slug</span><input bind:value={editSlug} required minlength="2" maxlength="64" pattern="[a-z0-9][a-z0-9-]+"/><small>{$t('Изменит публичную ссылку на проект.')}</small></label>
         <label class="field"><span>{$t('Описание')}</span><textarea bind:value={editDescription} rows="6" maxlength="4096"></textarea><small>{editDescription.length}/4096</small></label>
-        <label class="field"><span>{$t('Ссылка на исходный код')}</span><input bind:value={editGitUrl} type="text" required maxlength="2048" autocomplete="url" spellcheck="false" placeholder="https://github.com/example/world-sync"/><small>{$t('Укажите HTTP(S), SSH или Git URL публичного репозитория.')}</small></label>
+        <label class="field"><span>{$t('Ссылка на исходный код')}</span><input bind:value={editGitUrl} type="text" required maxlength="2048" autocomplete="url" spellcheck="false" placeholder="https://github.com/example/weather-station"/><small>{$t('Укажите HTTP(S), SSH или Git URL публичного репозитория.')}</small></label>
       </form>
     {/if}
 
