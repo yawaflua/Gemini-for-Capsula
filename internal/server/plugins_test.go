@@ -17,7 +17,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -51,6 +54,10 @@ func serverTestPlugin() int {
 		}
 		return map[string]any{"text": "Привет, " + c.String("name"), "volume": vol["level"]}, nil
 	})
+	p.HTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "%s %s cookie=%q auth=%q", r.Method, r.URL.Path, r.Header.Get("Cookie"), r.Header.Get("Authorization"))
+	}), false)
 	p.OnMessage(func(ctx context.Context, m pluginsdk.Message) {
 		p.Send(ctx, m.Device, map[string]string{"echo": string(m.Data)})
 	})
@@ -203,5 +210,53 @@ func TestPluginsOnServerAndSpeaker(t *testing.T) {
 	st := s.pluginsState()
 	if !st.Enabled || len(st.Plugins) != 1 || st.Plugins[0].State != "running" || len(st.Devices) != 1 || len(st.Devices[0].Tools) != 3 {
 		t.Fatalf("panel state = %+v", st)
+	}
+}
+
+func TestPluginHTTP(t *testing.T) {
+	exe, _ := os.Executable()
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "hello"), 0o755)
+	cmd, _ := json.Marshal([]string{exe})
+	os.WriteFile(filepath.Join(root, "hello", "plugin.json"), []byte(
+		`{"id":"hello","server":{"command":`+string(cmd)+`,"env":{"MARUSYA_TEST_PLUGIN":"1"}}}`), 0o644)
+	s := New(Config{AuthToken: "secret", PluginsDir: root, Logger: slog.New(slog.DiscardHandler)})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.StartPlugins(ctx)
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	for s.plugins.HTTPSpec("hello") == nil {
+		if ctx.Err() != nil {
+			t.Fatal("plugin did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	get := func(method, path, token string) (int, string) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader("x"))
+		req.Header.Set("Cookie", "a=b")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	if code, _ := get("GET", "/plugins/hello/page", ""); code != http.StatusUnauthorized {
+		t.Errorf("without a token: %d", code)
+	}
+	if code, _ := get("GET", "/plugins/hello/page", "wrong"); code != http.StatusUnauthorized {
+		t.Errorf("with a wrong token: %d", code)
+	}
+	if code, body := get("POST", "/plugins/hello/a/b", "secret"); code != http.StatusOK || body != `POST /a/b cookie="" auth=""` {
+		t.Errorf("with the token: %d %q", code, body)
+	}
+	if code, _ := get("GET", "/plugins/nope/x", "secret"); code != http.StatusNotFound {
+		t.Errorf("unknown plugin: %d", code)
 	}
 }

@@ -304,6 +304,7 @@ $("#install-form").addEventListener("submit", async (e) => {
     user: $("#inst-user").value,
     port: Number($("#inst-port").value) || 22,
     name: $("#inst-name").value,
+    dbus: $("#inst-dbus").checked,
     airplay: $("#inst-airplay").checked,
     spotify: $("#inst-spotify").checked,
   };
@@ -1073,8 +1074,15 @@ function fillKinds() {
 function updateProviderForm() {
   const k = kindOf($("#prov-kind").value);
   if (!k) return;
+  const isPlugin = k.kind === "plugin";
   $("#prov-url").placeholder = k.base_url;
-  $("#prov-model").placeholder = k.model;
+  $("#prov-model").placeholder = isPlugin ? "плагин/провайдер" : k.model;
+  $("#prov-url").closest(".field").hidden = isPlugin;
+  $("#prov-key").closest(".field").hidden = isPlugin;
+  $("#prov-plugin-models").replaceChildren(...(state.providers.plugin_providers || []).map((p) =>
+    el("option", { value: p.id, text: p.label || p.id })));
+  if (isPlugin) $("#prov-model").setAttribute("list", "prov-plugin-models");
+  else $("#prov-model").removeAttribute("list");
   $("#prov-speech-field").hidden = !k.pipeline;
   const cur = $("#prov-speech").value;
   const opts = [el("option", { value: "", text: "Gemini сервера (GEMINI_API_KEY)" })];
@@ -1082,6 +1090,10 @@ function updateProviderForm() {
   for (const v of state.providers.providers) {
     if (v.read_only || v.id === state.editing || !["gemini", "openai", "openai-realtime"].includes(v.kind)) continue;
     opts.push(el("option", { value: v.id, text: `Ключ провайдера «${v.name}»` }));
+  }
+  for (const sp of state.providers.plugin_speech || []) {
+    const what = [sp.transcribe && "распознавание", sp.synthesize && "синтез"].filter(Boolean).join(" и ");
+    opts.push(el("option", { value: "plugin:" + sp.id, text: `Плагин «${sp.label || sp.id}» (${what}, остальное — Gemini)` }));
   }
   $("#prov-speech").replaceChildren(...opts);
   $("#prov-speech").value = [...$("#prov-speech").options].some((o) => o.value === cur) ? cur : "";
@@ -1166,6 +1178,7 @@ function renderPlugins() {
     ? `Каталог ${p.dir}: в нём по папке на плагин с файлом plugin.json. Плагины работают отдельными процессами и общаются с сервером по JSON-RPC (SDK для Go, C++ и Python).`
     : "Плагины выключены. Чтобы включить, задайте каталог MARUSYA_PLUGINS_DIR (флаг -plugins_dir) и перезапустите сервер.";
   $("#plugins-rescan").hidden = !p.enabled;
+  renderCatalogNote();
   const errs = $("#plugins-errors");
   errs.replaceChildren(...p.errors.map((e) => el("li", { text: e })));
   errs.hidden = !p.errors.length;
@@ -1182,16 +1195,29 @@ function renderPlugins() {
         onclick: (e) => pluginAction(e.target, `plugins/${encodeURIComponent(v.id)}/enabled`, { enabled: !v.enabled }, v.enabled ? "Плагин выключен" : "Плагин включён") }),
       v.enabled ? el("button", { class: "btn text small", type: "button", text: "Перезапустить",
         onclick: (e) => pluginAction(e.target, `plugins/${encodeURIComponent(v.id)}/restart`, {}, "Плагин перезапущен") }) : null,
-      el("button", { class: "btn text small", type: "button", text: "Настройки", onclick: (e) => editPluginConfig(e.target.closest("li"), v) }));
+      el("button", { class: "btn text small", type: "button", text: "Настройки", onclick: (e) => editPluginConfig(e.target.closest("li"), v) }),
+      p.from_catalog?.[v.id] ? el("button", { class: "btn text small", type: "button", text: "Удалить", onclick: (e) => removeCatalogPlugin(e.target, v.id) }) : null);
     list.append(el("li", { class: "prov plugin" },
       el("div", { class: "prov-main" },
         el("b", { text: v.name || v.id }),
         el("small", { text: meta }),
         v.description ? el("small", { text: v.description }) : null,
         v.error ? el("small", { class: "error", text: v.error }) : null,
-        v.tools.length ? el("div", { class: "tools" }, ...v.tools.map((t) => el("code", { text: t }))) : null),
+        v.tools.length ? el("div", { class: "tools" }, ...v.tools.map((t) => el("code", { text: t }))) : null,
+        pluginCaps(v)),
       actions));
   }
+}
+
+// pluginCaps shows what a server plugin implements besides functions.
+function pluginCaps(v) {
+  const caps = [];
+  for (const p of v.providers || []) caps.push(el("code", { text: `модель: ${v.id}/${p}`, title: "Тип провайдера «Плагин» на вкладке «Провайдеры»" }));
+  for (const sp of v.speech || []) caps.push(el("code", { text: `речь: ${v.id}/${sp}` }));
+  if (v.instructions) caps.push(el("code", { text: "дополняет инструкцию", title: v.instructions }));
+  if (v.http) caps.push(el("a", { href: `/plugins/${encodeURIComponent(v.id)}/`, target: "_blank", rel: "noreferrer",
+    text: v.http === "public" ? "веб-страница (публичная)" : "веб-страница" }));
+  return caps.length ? el("div", { class: "tools" }, ...caps) : null;
 }
 
 function renderDevicePlugins() {
@@ -1250,6 +1276,92 @@ function editPluginConfig(li, v) {
 }
 
 $("#plugins-rescan").addEventListener("click", (e) => pluginAction(e.target, "plugins/rescan", {}, "Каталог плагинов перечитан"));
+
+// ---------- plugin catalog ----------
+
+const catalogEnv = { server: "сервер", agent: "колонка", both: "сервер + колонка" };
+
+function renderCatalogNote() {
+  const p = state.plugins;
+  $("#catalog-card").hidden = !p.catalog;
+  if (!p.catalog) return;
+  const note = $("#catalog-note");
+  note.replaceChildren("Плагины из ",
+    el("a", { href: p.catalog, target: "_blank", rel: "noreferrer", text: p.catalog.replace(/^https?:\/\//, "") }),
+    p.enabled
+      ? ". Сервер скачивает архив, сверяет его SHA-512 с тем, что прислал каталог, и ставит плагин в свой каталог плагинов."
+      : ". Чтобы ставить плагины, задайте каталог MARUSYA_PLUGINS_DIR.");
+  if (!state.catalog) searchCatalog().catch(() => {});
+}
+
+async function searchCatalog(btn) {
+  const err = $("#catalog-error");
+  err.hidden = true;
+  if (btn) btn.disabled = true;
+  try {
+    const q = $("#catalog-query").value.trim();
+    state.catalog = await api("GET", "catalog/search?q=" + encodeURIComponent(q));
+    renderCatalog();
+  } catch (ex) {
+    if (ex.status === 401) return;
+    err.textContent = ex.message;
+    err.hidden = false;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderCatalog() {
+  const list = $("#catalog-list");
+  list.replaceChildren();
+  const items = state.catalog?.projects || [];
+  if (!items.length) list.append(el("li", { class: "muted", text: "Ничего не нашлось." }));
+  const canInstall = state.plugins?.enabled;
+  for (const v of items) {
+    const meta = [v.slug, v.latest_version && "v" + v.latest_version, catalogEnv[v.environment]].filter(Boolean).join(" · ");
+    let action;
+    if (!v.latest_version) action = el("span", { class: "badge off", text: "нет версий" });
+    else if (v.environment === "agent") action = el("span", { class: "badge off", title: "Половину для колонки кладут в каталог плагинов агента на колонке", text: "только для колонки" });
+    else if (v.installed && v.installed === v.latest_version) action = el("span", { class: "badge idle", text: "установлен" });
+    else if (canInstall) action = el("button", { class: "btn tonal small", type: "button",
+      text: v.installed ? `Обновить с v${v.installed}` : "Установить",
+      onclick: (e) => installCatalogPlugin(e.target, v) });
+    list.append(el("li", { class: "prov plugin" },
+      el("div", { class: "prov-main" },
+        el("b", { text: v.name || v.slug }),
+        el("small", { text: meta }),
+        v.description ? el("small", { text: v.description }) : null,
+        v.environment === "both" ? el("small", { class: "muted", text: "Половину для колонки нужно поставить на колонку отдельно." }) : null),
+      el("div", { class: "row" },
+        action || null,
+        el("a", { class: "btn text small", href: v.url, target: "_blank", rel: "noreferrer", text: "Страница" }))));
+  }
+}
+
+async function installCatalogPlugin(btn, v) {
+  btn.textContent = "Скачиваем…";
+  const r = await run(btn, () => api("POST", "catalog/install", { project_id: v.id }), `Плагин «${v.name || v.slug}» установлен`);
+  if (r) { state.plugins = r; renderPlugins(); renderDevicePlugins(); }
+  await searchCatalog().catch(() => {});
+}
+
+// Two-step delete instead of confirm(), which may be blocked.
+async function removeCatalogPlugin(btn, id) {
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "Точно удалить?";
+    setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Удалить"; }, 4000);
+    return;
+  }
+  const r = await run(btn, () => api("DELETE", `catalog/${encodeURIComponent(id)}`), "Плагин удалён");
+  if (r) { state.plugins = r; renderPlugins(); renderDevicePlugins(); }
+  if (state.catalog) await searchCatalog().catch(() => {});
+}
+
+$("#catalog-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  searchCatalog(e.submitter);
+});
 
 // Refresh relative times.
 setInterval(() => { if (!$("#app").hidden) renderDetail(); }, 30000);

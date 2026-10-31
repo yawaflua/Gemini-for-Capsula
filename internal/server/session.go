@@ -402,7 +402,7 @@ func (d *deviceSession) connect() (provider.Session, error) {
 	defer cancel()
 	start := time.Now()
 	ps, err := d.cfg.Provider.Connect(ctx, provider.SessionOptions{
-		SystemInstruction: set.SystemInstruction + d.deviceContext() + languagesNote(lang, e.ExtraLanguages),
+		SystemInstruction: set.SystemInstruction + pluginInstructions(d.srv.plugins) + d.deviceContext() + languagesNote(lang, e.ExtraLanguages),
 		Language:          lang,
 		ExtraLanguages:    extraLanguages(lang, e.ExtraLanguages),
 		InputFormat:       d.hello.InputFormat,
@@ -981,7 +981,11 @@ var (
 
 // say asks the model text on behalf of the user, as if it had been spoken
 // to the speaker; the reply is played by the speaker.
-func (d *deviceSession) say(text string) error {
+func (d *deviceSession) say(text string) error { return d.request(text, SourcePanel) }
+
+// request runs a typed request, as from the panel; source names the caller
+// in the history.
+func (d *deviceSession) request(text, source string) error {
 	if !slices.Contains(d.hello.Features, models.FeatureRemoteTurn) {
 		return errNoRemote
 	}
@@ -1000,14 +1004,14 @@ func (d *deviceSession) say(text string) error {
 		return errNoText
 	}
 
-	turnID := "panel-" + newID()
+	turnID := strings.ReplaceAll(source, ":", "-") + "-" + newID()
 	d.mu.Lock()
 	if d.inTurn || d.awaiting || d.ask != nil {
 		d.mu.Unlock()
 		return errBusy
 	}
 	d.turnID, d.inTurn, d.awaiting, d.suppress = turnID, false, true, false
-	d.source, d.ending, d.output, d.retryText = SourcePanel, false, false, text
+	d.source, d.ending, d.output, d.retryText = source, false, false, text
 	d.heard.Reset()
 	d.heard.WriteString(text)
 	d.said.Reset()
@@ -1017,7 +1021,7 @@ func (d *deviceSession) say(text string) error {
 	d.mu.Unlock()
 	d.srv.events.devicesChanged()
 
-	d.log.Info("text request from the panel", "turn", turnID, "text", text)
+	d.log.Info("text request", "source", source, "turn", turnID, "text", text)
 	err = d.send(&models.Message{Type: models.TypeRemoteTurn, TurnID: turnID})
 	if err == nil {
 		err = ts.SendText(text)

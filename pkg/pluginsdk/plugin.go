@@ -32,11 +32,14 @@
 package pluginsdk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/signal"
 	"sync"
@@ -91,11 +94,24 @@ type Plugin struct {
 	onInit   func(context.Context, Init) error
 	init     Init
 
+	instructions string
+	providers    []ProviderSpec
+	provHandlers map[string]ProviderHandler
+	speech       []SpeechSpec
+	speechFuncs  map[string]SpeechHandler
+	httpSpec     *HTTPSpec
+	httpHandler  http.Handler
+
 	conn *jsonrpc.Conn
 }
 
 // New returns an empty plugin.
-func New() *Plugin { return &Plugin{handlers: map[string]ToolFunc{}} }
+func New() *Plugin {
+	return &Plugin{
+		handlers: map[string]ToolFunc{}, provHandlers: map[string]ProviderHandler{},
+		speechFuncs: map[string]SpeechHandler{},
+	}
+}
 
 // Tool registers a function for the language model.
 func (p *Plugin) Tool(spec ToolSpec, f ToolFunc) {
@@ -177,7 +193,10 @@ func (p *Plugin) handle(ctx context.Context, stop context.CancelFunc, method str
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		return InitializeResult{Protocol: ProtocolVersion, Tools: p.tools, Events: p.events}, nil
+		return InitializeResult{
+			Protocol: ProtocolVersion, Tools: p.tools, Events: p.events,
+			Instructions: p.instructions, Providers: p.providers, Speech: p.speech, HTTP: p.httpSpec,
+		}, nil
 
 	case MethodToolCall:
 		var c ToolCallParams
@@ -212,6 +231,66 @@ func (p *Plugin) handle(ctx context.Context, stop context.CancelFunc, method str
 			}
 		}
 		return nil, nil
+
+	case MethodProviderTurn:
+		var tp ProviderTurnParams
+		if err := json.Unmarshal(params, &tp); err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
+		}
+		return p.providerTurn(ctx, tp)
+
+	case MethodProviderClose:
+		var cp ProviderCloseParams
+		if json.Unmarshal(params, &cp) == nil {
+			p.mu.Lock()
+			h := p.provHandlers[cp.Provider]
+			p.mu.Unlock()
+			if h.Close != nil {
+				h.Close(cp.Session)
+			}
+		}
+		return nil, nil
+
+	case MethodSynthesize:
+		var sp SynthesizeParams
+		if err := json.Unmarshal(params, &sp); err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
+		}
+		p.mu.Lock()
+		h := p.speechFuncs[sp.Engine]
+		p.mu.Unlock()
+		if h.Synthesize == nil {
+			return nil, fmt.Errorf("engine %q does not synthesize speech", sp.Engine)
+		}
+		audio, err := h.Synthesize(ctx, sp)
+		return SynthesizeResult{Audio: audio}, err
+
+	case MethodTranscribe:
+		var tp TranscribeParams
+		if err := json.Unmarshal(params, &tp); err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
+		}
+		p.mu.Lock()
+		h := p.speechFuncs[tp.Engine]
+		p.mu.Unlock()
+		if h.Transcribe == nil {
+			return nil, fmt.Errorf("engine %q does not recognize speech", tp.Engine)
+		}
+		text, err := h.Transcribe(ctx, tp)
+		return TranscribeResult{Text: text}, err
+
+	case MethodHTTP:
+		var hr HTTPRequest
+		if err := json.Unmarshal(params, &hr); err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
+		}
+		p.mu.Lock()
+		h := p.httpHandler
+		p.mu.Unlock()
+		if h == nil {
+			return HTTPResponse{Status: http.StatusNotFound}, nil
+		}
+		return serveHTTP(ctx, h, hr), nil
 
 	case MethodShutdown:
 		// Answer first, then stop reading.
@@ -287,4 +366,122 @@ func (p *Plugin) Log(level, format string, args ...any) {
 		return
 	}
 	c.Notify(MethodLog, LogParams{Level: level, Message: fmt.Sprintf(format, args...)})
+}
+
+// Request makes a request to the assistant on a speaker as if the user had
+// said text; the answer is spoken there. device may be empty for the only
+// speaker. Server only.
+func (p *Plugin) Request(ctx context.Context, device, text string) error {
+	c, err := p.rpc()
+	if err != nil {
+		return err
+	}
+	return c.Call(ctx, MethodRequest, RequestParams{Device: device, Text: text}, nil)
+}
+
+// Instructions sets what the plugin adds to the system instruction of the
+// model, e.g. "Отвечай как пират". Before [Plugin.Run] it is the initial
+// value; later it replaces it on the host. Server only.
+func (p *Plugin) Instructions(ctx context.Context, text string) error {
+	p.mu.Lock()
+	p.instructions = text
+	conn := p.conn
+	p.mu.Unlock()
+	if conn == nil {
+		return nil
+	}
+	return conn.Call(ctx, MethodInstructions, InstructionsParams{Text: text}, nil)
+}
+
+// Turn is one turn of a conversation with a model provider of the plugin.
+type Turn struct {
+	ProviderTurnParams
+	p *Plugin
+}
+
+// Write streams part of the reply, so the speaker starts speaking before
+// the turn ends. Whole sentences are spoken as they arrive.
+func (t *Turn) Write(text string) {
+	if c, err := t.p.rpc(); err == nil && text != "" {
+		c.Notify(MethodProviderOutput, ProviderOutputParams{Session: t.Session, Text: text})
+	}
+}
+
+// ProviderHandler implements a model provider. Turn answers a turn: text
+// to speak (streamed with [Turn.Write] or returned) and functions to call.
+// Close, if set, is called when the conversation ends.
+type ProviderHandler struct {
+	Turn  func(ctx context.Context, t *Turn) (ProviderTurnResult, error)
+	Close func(session string)
+}
+
+// Provider registers a model provider. Server only.
+func (p *Plugin) Provider(spec ProviderSpec, h ProviderHandler) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.providers = append(p.providers, spec)
+	p.provHandlers[spec.Name] = h
+}
+
+func (p *Plugin) providerTurn(ctx context.Context, tp ProviderTurnParams) (any, error) {
+	p.mu.Lock()
+	h := p.provHandlers[tp.Provider]
+	p.mu.Unlock()
+	if h.Turn == nil {
+		return nil, fmt.Errorf("unknown provider %q", tp.Provider)
+	}
+	return h.Turn(ctx, &Turn{ProviderTurnParams: tp, p: p})
+}
+
+// SpeechHandler implements a speech engine; either function may be nil.
+// Synthesize returns 16-bit little-endian mono PCM at the sample rate of
+// the [SpeechSpec].
+type SpeechHandler struct {
+	Synthesize func(ctx context.Context, s SynthesizeParams) ([]byte, error)
+	Transcribe func(ctx context.Context, t TranscribeParams) (string, error)
+}
+
+// Speech registers a speech engine. Server only.
+func (p *Plugin) Speech(spec SpeechSpec, h SpeechHandler) {
+	spec.Synthesize = h.Synthesize != nil
+	spec.Transcribe = h.Transcribe != nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.speech = append(p.speech, spec)
+	p.speechFuncs[spec.Name] = h
+}
+
+// HTTP serves requests to /plugins/<id>/ on the server with h; the request
+// path is the part after the prefix. public routes need no login. Server
+// only.
+func (p *Plugin) HTTP(h http.Handler, public bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.httpHandler = h
+	p.httpSpec = &HTTPSpec{Public: public}
+}
+
+// serveHTTP runs h on a request from the host.
+func serveHTTP(ctx context.Context, h http.Handler, hr HTTPRequest) (resp HTTPResponse) {
+	// httptest.NewRequest panics on a malformed method or path.
+	defer func() {
+		if recover() != nil {
+			resp = HTTPResponse{Status: http.StatusBadRequest}
+		}
+	}()
+	target := hr.Path
+	if target == "" {
+		target = "/"
+	}
+	if hr.Query != "" {
+		target += "?" + hr.Query
+	}
+	req := httptest.NewRequest(hr.Method, target, bytes.NewReader(hr.Body)).WithContext(ctx)
+	for k, vs := range hr.Header {
+		req.Header[http.CanonicalHeaderKey(k)] = vs
+	}
+	req.RemoteAddr = hr.RemoteAddr
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return HTTPResponse{Status: rec.Code, Header: rec.Header(), Body: rec.Body.Bytes()}
 }

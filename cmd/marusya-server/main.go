@@ -45,6 +45,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/media/ytdlp"
 	"github.com/yawaflua/marusya-gemini/internal/netproxy"
 	"github.com/yawaflua/marusya-gemini/internal/openmeteo"
+	"github.com/yawaflua/marusya-gemini/internal/plugin"
 	"github.com/yawaflua/marusya-gemini/internal/provider"
 	"github.com/yawaflua/marusya-gemini/internal/provider/claude"
 	"github.com/yawaflua/marusya-gemini/internal/provider/echo"
@@ -58,6 +59,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/skills/homeassistant"
 	"github.com/yawaflua/marusya-gemini/internal/skills/spotify"
 	"github.com/yawaflua/marusya-gemini/internal/skills/weather"
+	"github.com/yawaflua/marusya-gemini/internal/speech"
 	"github.com/yawaflua/marusya-gemini/internal/speech/geminispeech"
 	"github.com/yawaflua/marusya-gemini/internal/speech/openaispeech"
 )
@@ -87,6 +89,7 @@ var (
 	gemProxy   = flag.String("gemini_proxy", config.Env("MARUSYA_GEMINI_PROXY", ""), `Proxy for Gemini only (REST and Live API), overriding -proxy; "direct" connects Gemini without a proxy. Empty uses -proxy.`)
 	noProxy    = flag.String("no_proxy", config.Env("MARUSYA_NO_PROXY", netproxy.DefaultNoProxy), "Comma separated hosts, .domains and CIDR ranges reached without -proxy / -gemini_proxy. Loopback and single-label hosts (Docker services) are always direct.")
 	pluginsDir = flag.String("plugins_dir", config.Env("MARUSYA_PLUGINS_DIR", ""), "Directory of server plugins, one subdirectory with a plugin.json each (see pkg/pluginsdk). Empty disables plugins.")
+	catalogURL = flag.String("plugin_registry", config.Env("MARUSYA_PLUGIN_REGISTRY", "https://marusya.ywfl.dev"), "Address of the plugin catalog searched in the panel; plugins install from it into -plugins_dir after a SHA-512 check. Empty hides the catalog.")
 	provFile   = flag.String("providers_file", config.Env("MARUSYA_PROVIDERS_FILE", ""), "File that keeps the model providers added in the web panel (with their API keys) across restarts. Empty keeps them in memory.")
 	settings   = flag.String("settings_file", config.Env("MARUSYA_SETTINGS_FILE", ""), "File that keeps the settings changed in the web panel across restarts. Empty keeps them in memory.")
 
@@ -180,6 +183,12 @@ func run() error {
 	if gpx != nil {
 		bo.GeminiTransport = gpx.Transport()
 	}
+	// Plugins may implement model providers and speech; the server hands
+	// its plugin manager over once it creates it.
+	backends := &plugin.Backends{Logger: log}
+	if *pluginsDir != "" {
+		bo.Plugins = pluginBackends{backends}
+	}
 	reg, err := registry.Open(*provFile, p, registry.NewBuilder(bo), log)
 	if err != nil {
 		log.Error("load providers; using the configured one", "err", err)
@@ -238,6 +247,8 @@ func run() error {
 		Providers:         reg,
 		ProvidersFile:     *provFile,
 		PluginsDir:        *pluginsDir,
+		PluginRegistry:    *catalogURL,
+		PluginBackends:    backends,
 		AuthToken:         *authToken,
 		SystemInstruction: prompt,
 		Language:          *language,
@@ -455,4 +466,15 @@ func checkHealth() int {
 		return 1
 	}
 	return 0
+}
+
+// pluginBackends adapts [plugin.Backends] to [registry.PluginBackends].
+type pluginBackends struct{ *plugin.Backends }
+
+func (b pluginBackends) Speech(id string, rec speech.Recognizer, syn speech.Synthesizer) (registry.PluginSpeech, error) {
+	sp, err := b.Backends.Speech(id, rec, syn)
+	if err != nil {
+		return nil, err
+	}
+	return sp, nil
 }

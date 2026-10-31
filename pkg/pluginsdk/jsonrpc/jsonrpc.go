@@ -77,6 +77,7 @@ type message struct {
 type Conn struct {
 	r       *bufio.Reader
 	handler Handler
+	inline  map[string]bool // notifications served in order, see Ordered
 
 	wmu sync.Mutex
 	w   io.Writer
@@ -100,6 +101,19 @@ func New(r io.Reader, w io.Writer, h Handler) *Conn {
 	return &Conn{
 		r: bufio.NewReaderSize(r, 64<<10), w: w, handler: h,
 		pending: map[string]chan *message{}, closed: make(chan struct{}),
+	}
+}
+
+// Ordered makes notifications of the given methods be served one by one
+// in the order they arrive, before any response read after them. Their
+// handler must return quickly and must not wait for a call on this
+// connection. Call it before [Conn.Run].
+func (c *Conn) Ordered(methods ...string) {
+	if c.inline == nil {
+		c.inline = map[string]bool{}
+	}
+	for _, m := range methods {
+		c.inline[m] = true
 	}
 }
 
@@ -135,6 +149,8 @@ func (c *Conn) Run(ctx context.Context) error {
 			continue
 		}
 		switch {
+		case m.Method != "" && len(m.ID) == 0 && c.inline[m.Method]:
+			c.serve(ctx, &m)
 		case m.Method != "":
 			wg.Add(1)
 			go func() {

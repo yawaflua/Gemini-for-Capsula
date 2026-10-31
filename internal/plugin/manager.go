@@ -45,6 +45,14 @@ type Handler interface {
 	Send(ctx context.Context, plugin, device string, data json.RawMessage) error
 }
 
+// ServerHandler is implemented by the [Handler] of the server for what only
+// server plugins may ask.
+type ServerHandler interface {
+	// Request makes a request to the assistant on a speaker as if the
+	// user had said text.
+	Request(ctx context.Context, plugin, device, text string) error
+}
+
 // Config configures a [Manager].
 type Config struct {
 	// Dir holds one subdirectory per plugin.
@@ -87,6 +95,11 @@ type Status struct {
 	Since       *time.Time      `json:"since,omitempty"`
 	Tools       []string        `json:"tools"`
 	Config      json.RawMessage `json:"config,omitempty"`
+	// What a server plugin implements besides tools.
+	Providers    []string `json:"providers,omitempty"`
+	Speech       []string `json:"speech,omitempty"`
+	HTTP         string   `json:"http,omitempty"` // "", "login" or "public"
+	Instructions string   `json:"instructions,omitempty"`
 }
 
 // state is persisted in Config.StateFile.
@@ -337,6 +350,19 @@ func (m *Manager) List() []Status {
 		for _, t := range in.tools {
 			s.Tools = append(s.Tools, t.Name)
 		}
+		for _, p := range in.caps.providers {
+			s.Providers = append(s.Providers, p.Name)
+		}
+		for _, sp := range in.caps.speech {
+			s.Speech = append(s.Speech, sp.Name)
+		}
+		switch h := in.caps.http; {
+		case h != nil && h.Public:
+			s.HTTP = "public"
+		case h != nil:
+			s.HTTP = "login"
+		}
+		s.Instructions = in.caps.instructions
 		if in.state == StateRunning {
 			t := in.started
 			s.Since = &t

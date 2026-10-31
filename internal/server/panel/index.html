@@ -83,6 +83,10 @@
             </label>
           </div>
           <div class="opt-row">
+            <label class="switch"><input type="checkbox" role="switch" id="inst-dbus" checked><span class="switch-track"><span class="switch-handle"></span></span></label>
+            <div><strong>D-Bus</strong><small class="hint">Зарегистрировать сервис <code>ru.marusya.Agent</code> на системной шине: правила в <code>/etc/dbus-1/system.d/</code>, группа <code>marusya</code>, автозапуск dbus. Нужен своим скриптам и плагинам для кольца, экрана и датчиков.</small></div>
+          </div>
+          <div class="opt-row">
             <label class="switch"><input type="checkbox" role="switch" id="inst-airplay"><span class="switch-track"><span class="switch-handle"></span></span></label>
             <div><strong>AirPlay 2</strong><small class="hint">Музыка с iPhone, iPad и Mac. Сборка <a href="https://github.com/ryysel/capsula-mini-airplay2" target="_blank" rel="noopener">capsula-mini-airplay2</a>, нужны Alpine 3.24 и интернет на колонке.</small></div>
           </div>
@@ -230,6 +234,16 @@
     </section>
     <!-- Plugins -->
     <section id="tab-plugins" class="tabpane" hidden>
+      <div class="card" id="catalog-card" hidden>
+        <h2>Каталог плагинов</h2>
+        <p class="muted" id="catalog-note"></p>
+        <form class="catalog-search" id="catalog-form" role="search">
+          <input id="catalog-query" type="search" placeholder="Погода, кубики, Home Assistant…" maxlength="200" spellcheck="false" aria-label="Поиск по каталогу плагинов">
+          <button class="btn tonal" type="submit">Найти</button>
+        </form>
+        <p id="catalog-error" class="error" hidden></p>
+        <ul class="prov-list" id="catalog-list"></ul>
+      </div>
       <div class="card">
         <h2>Плагины сервера</h2>
         <p class="muted" id="plugins-note"></p>
@@ -278,6 +292,7 @@
           <label class="field">
             <span>Модель</span>
             <input id="prov-model" spellcheck="false" autocomplete="off">
+            <datalist id="prov-plugin-models"></datalist>
           </label>
           <label class="field">
             <span>Голос</span>

@@ -1,0 +1,8 @@
+{
+  "id": "ytmusic",
+  "name": "YouTube Music",
+  "version": "1.0.0",
+  "description": "Включает музыку с YouTube Music: «Маруся, включи Кино на ютуб музыке». Ищет через yt-dlp на сервере и запускает поток на колонке; в панели есть страница с поиском. Нужен yt-dlp на сервере.",
+  "server": {"command": ["python3", "ytmusic.py"]},
+  "config": {"yt_dlp": "yt-dlp"}
+}

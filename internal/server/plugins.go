@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yawaflua/marusya-gemini/internal/models"
 	"github.com/yawaflua/marusya-gemini/internal/plugin"
@@ -38,7 +39,7 @@ func (s *Server) newPlugins() *plugin.Manager {
 	if s.cfg.PluginsDir == "" {
 		return nil
 	}
-	return plugin.New(plugin.Config{
+	m := plugin.New(plugin.Config{
 		Dir:         s.cfg.PluginsDir,
 		Host:        pluginsdk.HostServer,
 		HostVersion: s.cfg.Version,
@@ -47,6 +48,18 @@ func (s *Server) newPlugins() *plugin.Manager {
 		OnChange:    s.pluginsChanged,
 		Logger:      s.cfg.Logger,
 	})
+	if s.cfg.PluginBackends != nil {
+		s.cfg.PluginBackends.Set(m)
+	}
+	return m
+}
+
+// pluginInstructions is what the plugins add to the system instruction.
+func pluginInstructions(m *plugin.Manager) string {
+	if t := m.Instructions(); t != "" {
+		return "\n\n" + t
+	}
+	return ""
 }
 
 // StartPlugins runs the server plugins until ctx is done. Without
@@ -106,7 +119,7 @@ func (s *Server) pluginsChanged() {
 	for _, t := range s.plugins.Tools() {
 		names = append(names, t.Name)
 	}
-	sig := strings.Join(names, ",")
+	sig := strings.Join(names, ",") + "\x00" + s.plugins.Instructions()
 	s.plmu.Lock()
 	changed := sig != s.pluginTools
 	s.pluginTools = sig
@@ -183,6 +196,19 @@ func (h pluginHost) Say(ctx context.Context, plugin, device, text string, listen
 		err = nil
 	}
 	return answer, err
+}
+
+// Request makes a typed request to the assistant on a speaker.
+func (h pluginHost) Request(_ context.Context, plugin, device, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" || utf8.RuneCountInString(text) > maxAskText {
+		return fmt.Errorf("текст запроса: от 1 до %d символов", maxAskText)
+	}
+	d, err := h.device(device)
+	if err != nil {
+		return err
+	}
+	return d.request(text, "plugin:"+plugin)
 }
 
 func (h pluginHost) Devices(context.Context) []pluginsdk.Device {
@@ -328,6 +354,10 @@ type pluginsState struct {
 	Errors  []string        `json:"errors"`
 	// Devices lists the plugin functions of each connected speaker.
 	Devices []devicePlugins `json:"devices"`
+	// Catalog is the address of the plugin catalog, empty if off.
+	Catalog string `json:"catalog,omitempty"`
+	// FromCatalog lists the plugins installed from the catalog, by id.
+	FromCatalog map[string]catalogInstall `json:"from_catalog"`
 }
 
 type devicePlugins struct {
@@ -347,6 +377,8 @@ func (s *Server) pluginsState() pluginsState {
 			st.Errors = e
 		}
 	}
+	st.Catalog = s.cfg.PluginRegistry
+	_, st.FromCatalog = s.installedPlugins()
 	for _, d := range s.sessions() {
 		dp := devicePlugins{
 			Device: d.hello.DeviceID, Plugins: d.supportsFeature(models.FeaturePlugins),

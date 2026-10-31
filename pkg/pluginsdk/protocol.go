@@ -39,6 +39,25 @@ const (
 	// MethodMessage delivers data from the other half of a plugin that runs
 	// on both the server and the speaker: [Message].
 	MethodMessage = "message"
+
+	// The methods below are called on server plugins that declared the
+	// matching capability in [InitializeResult].
+
+	// MethodProviderTurn asks a model provider of the plugin to answer:
+	// [ProviderTurnParams] → [ProviderTurnResult].
+	MethodProviderTurn = "provider.turn"
+	// MethodProviderClose says a conversation ended, so the plugin can
+	// drop its history: [ProviderCloseParams] (notification).
+	MethodProviderClose = "provider.close"
+	// MethodSynthesize turns text into speech: [SynthesizeParams] →
+	// [SynthesizeResult].
+	MethodSynthesize = "speech.synthesize"
+	// MethodTranscribe turns speech into text: [TranscribeParams] →
+	// [TranscribeResult].
+	MethodTranscribe = "speech.transcribe"
+	// MethodHTTP passes an HTTP request sent to /plugins/<id>/ on the
+	// server: [HTTPRequest] → [HTTPResponse].
+	MethodHTTP = "http.request"
 )
 
 // Methods a plugin calls on the host.
@@ -56,6 +75,17 @@ const (
 	MethodDevices = "host.devices"
 	// MethodSend sends data to the other half of the plugin: [SendParams].
 	MethodSend = "plugin.send"
+	// MethodRequest makes a request to the assistant on a speaker as if
+	// the user had said it; the answer is spoken there (server only):
+	// [RequestParams].
+	MethodRequest = "host.request"
+	// MethodInstructions replaces what the plugin adds to the system
+	// instruction of the model (server only): [InstructionsParams]. New
+	// conversations get it at once, a running one after its turn.
+	MethodInstructions = "host.instructions"
+	// MethodProviderOutput streams part of the reply during
+	// [MethodProviderTurn]: [ProviderOutputParams] (notification).
+	MethodProviderOutput = "provider.output"
 )
 
 // Param types.
@@ -113,6 +143,57 @@ type InitializeResult struct {
 	Tools    []ToolSpec `json:"tools,omitempty"`
 	// Events lists the event kinds the plugin wants; "*" is every kind.
 	Events []string `json:"events,omitempty"`
+
+	// The fields below are server only.
+
+	// Instructions are added to the system instruction of the model, e.g.
+	// a mood or rules for the plugin's functions. See [MethodInstructions].
+	Instructions string `json:"instructions,omitempty"`
+	// Providers are model providers the plugin implements. They show up as
+	// the type "Плагин" in the providers tab of the panel.
+	Providers []ProviderSpec `json:"providers,omitempty"`
+	// Speech are speech recognition and synthesis engines the plugin
+	// implements, for text model providers.
+	Speech []SpeechSpec `json:"speech,omitempty"`
+	// HTTP, if set, routes requests to /plugins/<id>/ on the server to
+	// the plugin, see [MethodHTTP].
+	HTTP *HTTPSpec `json:"http,omitempty"`
+}
+
+// ProviderSpec declares a model provider: a text model that answers the
+// words of the user, calls functions and keeps the history of each
+// conversation. The server recognizes and synthesizes speech around it.
+// Name must match ^[a-z0-9][a-z0-9_-]{0,31}$.
+type ProviderSpec struct {
+	Name        string `json:"name"`
+	Label       string `json:"label,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// SpeechSpec declares a speech engine. Name is as in [ProviderSpec].
+type SpeechSpec struct {
+	Name  string `json:"name"`
+	Label string `json:"label,omitempty"`
+	// Synthesize and Transcribe say what the engine can do.
+	Synthesize bool `json:"synthesize,omitempty"`
+	Transcribe bool `json:"transcribe,omitempty"`
+	// SampleRate of synthesized speech: 16-bit little-endian mono PCM;
+	// default 24000.
+	SampleRate int `json:"sample_rate,omitempty"`
+	// Voices are the voices to choose from, if known.
+	Voices []string `json:"voices,omitempty"`
+}
+
+// DefaultSampleRate is the sample rate of synthesized speech when
+// [SpeechSpec.SampleRate] is not set.
+const DefaultSampleRate = 24000
+
+// HTTPSpec configures the HTTP routes of a plugin. Without Public a
+// request needs the panel login or the server token (Authorization:
+// Bearer $MARUSYA_AUTH_TOKEN); public routes are for webhooks and pages
+// that check access themselves.
+type HTTPSpec struct {
+	Public bool `json:"public,omitempty"`
 }
 
 // ToolCallParams are sent with [MethodToolCall].
@@ -192,4 +273,118 @@ type DevicesResult struct {
 type SendParams struct {
 	Device string          `json:"device,omitempty"`
 	Data   json.RawMessage `json:"data"`
+}
+
+// ProviderTurnParams are sent with [MethodProviderTurn]. A turn starts with
+// the words of the user in Text. If the plugin asks for function calls,
+// the host runs them and calls again with ToolResults and an empty Text,
+// until a reply has no calls.
+type ProviderTurnParams struct {
+	Provider string `json:"provider"`
+	// Session identifies the conversation; the plugin keeps its history.
+	Session string `json:"session"`
+	Text    string `json:"text,omitempty"`
+	// ToolResults answer the ToolCalls of the previous reply.
+	ToolResults []ProviderToolResult `json:"tool_results,omitempty"`
+	// System is the system instruction of the conversation.
+	System string `json:"system,omitempty"`
+	// Language is a BCP-47 code, e.g. "ru-RU".
+	Language string `json:"language,omitempty"`
+	// Tools are the functions the model may call.
+	Tools []ToolSpec `json:"tools,omitempty"`
+}
+
+// ProviderTurnResult is the answer to [MethodProviderTurn]. Text is spoken
+// after the text streamed with [MethodProviderOutput].
+type ProviderTurnResult struct {
+	Text      string             `json:"text,omitempty"`
+	ToolCalls []ProviderToolCall `json:"tool_calls,omitempty"`
+}
+
+// ProviderToolCall asks the host to run a function. ID is any string
+// unique in the turn.
+type ProviderToolCall struct {
+	ID   string         `json:"id"`
+	Name string         `json:"name"`
+	Args map[string]any `json:"args,omitempty"`
+}
+
+// ProviderToolResult is the outcome of a [ProviderToolCall].
+type ProviderToolResult struct {
+	ID     string         `json:"id"`
+	Name   string         `json:"name"`
+	Output map[string]any `json:"output,omitempty"`
+	Error  string         `json:"error,omitempty"`
+}
+
+// ProviderOutputParams are sent with [MethodProviderOutput].
+type ProviderOutputParams struct {
+	Session string `json:"session"`
+	Text    string `json:"text"`
+}
+
+// ProviderCloseParams are sent with [MethodProviderClose].
+type ProviderCloseParams struct {
+	Provider string `json:"provider"`
+	Session  string `json:"session"`
+}
+
+// SynthesizeParams are sent with [MethodSynthesize].
+type SynthesizeParams struct {
+	Engine   string `json:"engine"`
+	Text     string `json:"text"`
+	Language string `json:"language,omitempty"`
+	Voice    string `json:"voice,omitempty"`
+}
+
+// SynthesizeResult is the answer to [MethodSynthesize]: 16-bit
+// little-endian mono PCM at the engine's sample rate (base64 in JSON).
+type SynthesizeResult struct {
+	Audio []byte `json:"audio"`
+}
+
+// TranscribeParams are sent with [MethodTranscribe]: 16-bit little-endian
+// mono PCM (base64 in JSON) at SampleRate.
+type TranscribeParams struct {
+	Engine     string `json:"engine"`
+	Audio      []byte `json:"audio"`
+	SampleRate int    `json:"sample_rate"`
+	Language   string `json:"language,omitempty"`
+}
+
+// TranscribeResult is the answer to [MethodTranscribe]; Text is empty if
+// there was no speech.
+type TranscribeResult struct {
+	Text string `json:"text"`
+}
+
+// HTTPRequest is sent with [MethodHTTP]. Path is below /plugins/<id>, e.g.
+// "/" or "/webhook"; Body is base64 in JSON, at most 4 MiB.
+type HTTPRequest struct {
+	Method     string              `json:"method"`
+	Path       string              `json:"path"`
+	Query      string              `json:"query,omitempty"`
+	Header     map[string][]string `json:"header,omitempty"`
+	Body       []byte              `json:"body,omitempty"`
+	RemoteAddr string              `json:"remote_addr,omitempty"`
+}
+
+// HTTPResponse is the answer to [MethodHTTP]. Status 0 is 200.
+type HTTPResponse struct {
+	Status int                 `json:"status,omitempty"`
+	Header map[string][]string `json:"header,omitempty"`
+	Body   []byte              `json:"body,omitempty"`
+}
+
+// RequestParams are sent with [MethodRequest]. Device may be empty for the
+// only connected speaker.
+type RequestParams struct {
+	Device string `json:"device,omitempty"`
+	Text   string `json:"text"`
+}
+
+// InstructionsParams are sent with [MethodInstructions]; empty Text
+// removes the addition.
+type InstructionsParams struct {
+	Text string `json:"text"`
 }

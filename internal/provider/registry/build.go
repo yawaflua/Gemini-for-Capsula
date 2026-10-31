@@ -37,6 +37,24 @@ var kinds = []KindInfo{
 	{Kind: KindOpenAIRealtime, Label: "OpenAI Realtime (голос в голос)", BaseURL: openairt.DefaultBaseURL, Model: openairt.DefaultModel},
 	{Kind: KindOpenAI, Label: "OpenAI-совместимый чат (OpenRouter, Ollama, DeepSeek…)", BaseURL: openaichat.DefaultBaseURL, Model: openaichat.DefaultModel, Pipeline: true},
 	{Kind: KindAnthropic, Label: "Anthropic Claude", BaseURL: "https://api.anthropic.com", Model: claude.DefaultModel, Pipeline: true},
+	{Kind: KindPlugin, Label: "Плагин сервера (своя модель)", Pipeline: true},
+}
+
+// PluginBackends are the model providers and speech engines of server
+// plugins (see plugin.Backends).
+type PluginBackends interface {
+	// Provider returns the provider id ("<plugin>/<name>").
+	Provider(id string, rec speech.Recognizer, syn speech.Synthesizer) (provider.Provider, error)
+	// Speech returns the engine id; what it cannot do falls back to rec
+	// and syn.
+	Speech(id string, rec speech.Recognizer, syn speech.Synthesizer) (PluginSpeech, error)
+}
+
+// PluginSpeech is a speech engine of a plugin.
+type PluginSpeech interface {
+	speech.Recognizer
+	speech.Synthesizer
+	SetVoice(string)
 }
 
 // BuildOptions configure [NewBuilder].
@@ -54,7 +72,9 @@ type BuildOptions struct {
 	GoogleSearch bool
 	// ClaudeEffort is the effort of Claude models, e.g. "low".
 	ClaudeEffort string
-	Logger       *slog.Logger
+	// Plugins provide KindPlugin and plugin speech; nil disables them.
+	Plugins PluginBackends
+	Logger  *slog.Logger
 }
 
 // NewBuilder returns a [Builder] for every [Kind].
@@ -93,6 +113,15 @@ func NewBuilder(o BuildOptions) Builder {
 				WebSearch: o.GoogleSearch, Recognizer: rec, Synthesizer: syn,
 				HTTPClient: o.HTTPClient, Logger: o.Logger,
 			})
+		case KindPlugin:
+			if o.Plugins == nil {
+				return nil, errors.New("плагины выключены: задайте MARUSYA_PLUGINS_DIR")
+			}
+			rec, syn, err := o.speech(ctx, s, all)
+			if err != nil {
+				return nil, err
+			}
+			return o.Plugins.Provider(s.Model, rec, syn)
 		}
 		return nil, fmt.Errorf("неизвестный тип провайдера %q", s.Kind)
 	}
@@ -109,14 +138,29 @@ type voiced interface {
 // Every provider gets its own instance, so their voices are independent.
 func (o BuildOptions) speech(ctx context.Context, s Spec, all []Spec) (speech.Recognizer, speech.Synthesizer, error) {
 	var sp voiced
-	switch src := s.Speech; src {
-	case "":
+	switch src := s.Speech; {
+	case strings.HasPrefix(src, SpeechPlugin):
+		if o.Plugins == nil {
+			return nil, nil, errors.New("плагины выключены: задайте MARUSYA_PLUGINS_DIR")
+		}
+		// What the engine cannot do falls back to the server's Gemini.
+		var rec speech.Recognizer
+		var syn speech.Synthesizer
+		if g, err := o.gemini(ctx, o.GeminiAPIKey, ""); err == nil {
+			rec, syn = g, g
+		}
+		ps, err := o.Plugins.Speech(strings.TrimPrefix(src, SpeechPlugin), rec, syn)
+		if err != nil {
+			return nil, nil, err
+		}
+		sp = ps
+	case src == "":
 		g, err := o.gemini(ctx, o.GeminiAPIKey, "")
 		if err != nil {
 			return nil, nil, fmt.Errorf("речь по умолчанию (Gemini): %w", err)
 		}
 		sp = g
-	case SpeechSelf:
+	case src == SpeechSelf:
 		sp = o.openai(s.BaseURL, s.APIKey)
 	default:
 		var from Spec

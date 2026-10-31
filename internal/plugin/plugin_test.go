@@ -33,6 +33,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv("MARUSYA_TEST_PLUGIN") == "1" {
 		os.Exit(testPlugin())
 	}
+	if os.Getenv("MARUSYA_TEST_PLUGIN") == "caps" {
+		os.Exit(capsPlugin())
+	}
 	os.Exit(m.Run())
 }
 
