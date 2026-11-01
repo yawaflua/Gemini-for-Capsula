@@ -405,11 +405,25 @@ def build(keywords, rate):
     return spotters, engines, unsupported
 
 
+def feed_all(spotters, pcm, now, emit):
+    """Feeds one audio frame to every spotter.
+
+    Runs on a worker thread: a Vosk decode of a busy box can take tens of
+    milliseconds, and blocking the event loop stalls the keepalive ping/pong
+    until the client drops the stream.
+    """
+    for spotter in spotters:
+        spotter.feed(pcm, now, emit)
+
+
 async def handler(ws):
     loop = asyncio.get_running_loop()
     peer = ws.remote_address
     spotters = []
     last = -COOLDOWN
+    # One worker per connection: frames stay in order, and a slow verify in
+    # vosk_pool cannot delay the audio path.
+    feed_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="wake-feed")
 
     def emit(keyword, engine, score, at):
         """Reports a keyword heard in the audio received at time at."""
@@ -430,30 +444,33 @@ async def handler(ws):
 
         loop.call_soon_threadsafe(send)
 
-    async for msg in ws:
-        if isinstance(msg, str):
-            try:
-                cfg = json.loads(msg)
-                keywords = [str(k).strip().lower() for k in cfg.get("keywords", []) if str(k).strip()]
-                rate = int(cfg.get("sample_rate", 16000))
-                spotters, engines, unsupported = await loop.run_in_executor(None, build, keywords, rate)
-            except Exception as e:  # noqa: BLE001 - reported to the server
-                log.exception("configure")
-                await ws.send(json.dumps({"error": str(e)}))
-                return
-            log.info("%s: keywords %s", peer, engines)
-            await ws.send(json.dumps({"ready": True, "engines": engines, "unsupported": unsupported},
-                                     ensure_ascii=False))
-            continue
-        now = time.monotonic()
-        for s in spotters:
-            s.feed(msg, now, emit)
+    try:
+        async for msg in ws:
+            if isinstance(msg, str):
+                try:
+                    cfg = json.loads(msg)
+                    keywords = [str(k).strip().lower() for k in cfg.get("keywords", []) if str(k).strip()]
+                    rate = int(cfg.get("sample_rate", 16000))
+                    spotters, engines, unsupported = await loop.run_in_executor(None, build, keywords, rate)
+                except Exception as e:  # noqa: BLE001 - reported to the server
+                    log.exception("configure")
+                    await ws.send(json.dumps({"error": str(e)}))
+                    return
+                log.info("%s: keywords %s", peer, engines)
+                await ws.send(json.dumps({"ready": True, "engines": engines, "unsupported": unsupported},
+                                         ensure_ascii=False))
+                continue
+            now = time.monotonic()
+            await loop.run_in_executor(feed_pool, feed_all, spotters, msg, now, emit)
+    finally:
+        feed_pool.shutdown(wait=False, cancel_futures=True)
 
 
 async def main():
     host, _, port = os.environ.get("WAKE_LISTEN", "0.0.0.0:2700").rpartition(":")
     vosk_model()  # fail fast on a broken image
-    async with serve(handler, host or "0.0.0.0", int(port), max_size=1 << 20):
+    async with serve(handler, host or "0.0.0.0", int(port), max_size=1 << 20,
+                      ping_interval=20, ping_timeout=60):
         log.info("listening on %s:%s", host, port)
         await asyncio.get_running_loop().create_future()
 
