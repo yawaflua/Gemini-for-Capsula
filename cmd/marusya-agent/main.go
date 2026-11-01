@@ -58,6 +58,7 @@ import (
 	"github.com/yawaflua/marusya-gemini/internal/indicator"
 	"github.com/yawaflua/marusya-gemini/internal/indicator/face"
 	"github.com/yawaflua/marusya-gemini/internal/indicator/ringled"
+	"github.com/yawaflua/marusya-gemini/internal/indicator/statecmd"
 	"github.com/yawaflua/marusya-gemini/internal/logging"
 	"github.com/yawaflua/marusya-gemini/internal/media"
 	"github.com/yawaflua/marusya-gemini/internal/models"
@@ -131,6 +132,7 @@ var (
 	ringDev           = flag.String("ring_dev", config.Env("MARUSYA_RING_DEV", ringled.DefaultDevice), "spidev node of the LED ring.")
 	ringledBrightness = flag.Int("ringled_brightness", 30, "LED ring brightness, per cent.")
 	ringDemo          = flag.Bool("ring_demo", false, "Play every LED ring animation once and exit.")
+	stateCommand      = flag.String("state_command", config.Env("MARUSYA_STATE_COMMAND", ""), "Run this command with the assistant state (idle, listening, thinking, speaking, error, disconnected, announcing) on every change, e.g. to drive a ring owned by another process.")
 
 	logLevel = flag.String("log_level", config.Env("MARUSYA_LOG_LEVEL", "info"), "Log level: debug, info, warn, error.")
 )
@@ -307,6 +309,10 @@ func run() error {
 		dispatcher.Sensors = surf
 	}
 	indicators = append(indicators, surf)
+	if *stateCommand != "" {
+		indicators = append(indicators, &statecmd.Indicator{Command: strings.Fields(*stateCommand), Logger: log})
+		log.Info("state command enabled", "cmd", *stateCommand)
+	}
 	go surf.Run(ctx)
 	if *dbusService {
 		go serveDBus(ctx, surf, log)

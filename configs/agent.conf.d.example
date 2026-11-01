@@ -16,6 +16,9 @@ MARUSYA_TIMEZONE=
 MARUSYA_CAPTURE_DEVICE=default
 MARUSYA_PLAYBACK_DEVICE=default
 MARUSYA_MIXER_CONTROL=Master
+# Run this command with the assistant state on every change, e.g. to
+# drive an LED ring owned by another process (see indicator/statecmd).
+MARUSYA_STATE_COMMAND=
 # External volume program, called as `<cmd> get`, `<cmd> set <0..100>`
 # and `<cmd> mute on|off`. Takes precedence over MARUSYA_MIXER_CONTROL.
 # See configs/volume-capsule-ipc.example.sh.
