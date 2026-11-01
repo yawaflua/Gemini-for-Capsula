@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yawaflua/marusya-gemini/internal/provider"
 	"github.com/yawaflua/marusya-gemini/internal/provider/pipeline"
@@ -33,12 +34,12 @@ import (
 var (
 	// Go's \b is ASCII-only, so Cyrillic commands need an explicit
 	// separator class instead of word boundaries.
-	commandRE = regexp.MustCompile(`(?i)^(сделай|поставь|включи|выключи|отключи|убери|верни|убавь|прибавь|увеличь|уменьши|громче|погромче|тише|потише|громкость|следующий|следующую|предыдущий|предыдущую|пауза|паузу|продолжи|продолжай|играй|дальше|назад|стоп|next|prev|play)(?:[\s,.:;!?-]|$)`)
+	commandRE = regexp.MustCompile(`(?i)^(сделай|поставь|установи|включи|выключи|отключи|убери|верни|убавь|прибавь|увеличь|уменьши|громче|погромче|тише|потише|громкость|яркость|следующий|следующую|предыдущий|предыдущую|пауза|паузу|продолжи|продолжай|играй|дальше|назад|стоп|запусти|активируй|выполни|без|next|prev|play)(?:[\s,.:;!?-]|$)`)
 
 	volumeSetRE  = regexp.MustCompile(`(?i)громкость\s+(?:на\s+)?(\d{1,3})`)
 	volumeUpRE   = regexp.MustCompile(`(?i)(громче|погромче|прибавь|увеличь)`)
 	volumeDownRE = regexp.MustCompile(`(?i)(тише|потише|убавь|уменьши)`)
-	muteOnRE     = regexp.MustCompile(`(?i)(выключи|отключи|убери)\s+(звук|громкость)`)
+	muteOnRE     = regexp.MustCompile(`(?i)(выключи|отключи|убери)\s+(звук|громкость)|без\s+звука`)
 	muteOffRE    = regexp.MustCompile(`(?i)(включи|верни)\s+(звук|громкость)`)
 
 	mediaNextRE  = regexp.MustCompile(`(?i)((следующий|следующую|следующая)\s+(трек|песн)\w*|дальше|next)`)
@@ -51,6 +52,22 @@ var (
 
 	homeOnRE  = regexp.MustCompile(`(?i)^(включи|вруби|зажги)\s+(.+)`)
 	homeOffRE = regexp.MustCompile(`(?i)^(выключи|отключи|погаси)\s+(.+)`)
+
+	// Relative volume: "сделай громче на 20", "тише на 10".
+	volumeDeltaRE = regexp.MustCompile(`(?i)(?:на|плюс|\+)\s*(\d{1,3})`)
+
+	// Date and weekday: the time skill already returns both.
+	dateRE = regexp.MustCompile(`(?i)(какое\s+(сегодня\s+)?число|какая\s+(сегодня\s+)?дата|какой\s+(сегодня\s+)?день(?:\s+недели)?)`)
+
+	// Brightness: "яркость в зале 50", "поставь яркость торшера 50".
+	brightnessPlaceRE  = regexp.MustCompile(`(?i)^(?:поставь|установи|сделай|включи)?\s*яркость\s+(?:на\s+)?(\d{1,3})(?:\s*(?:%|процент\w*))?(?:\s+(?:в|на|у)\s+(.+))?$`)
+	brightnessDeviceRE = regexp.MustCompile(`(?i)^(?:поставь|установи|сделай|включи)?\s*яркость\s+(.+?)\s+(?:на\s+)?(\d{1,3})(?:\s*(?:%|процент\w*))?$`)
+
+	// Room first: "яркость в зале 40" ("яркость на кухне 30").
+	brightnessRoomRE = regexp.MustCompile(`(?i)^(?:поставь|установи|сделай|включи)?\s*яркость\s+(?:в|на|у)\s+(.+?)\s+(?:на\s+)?(\d{1,3})(?:\s*(?:%|процент\w*))?$`)
+
+	// Scenes: "включи сцену Спокойной ночи".
+	sceneRE = regexp.MustCompile(`(?i)^(запусти|включи|активируй|выполни)\s+сцену\s+(.+)$`)
 )
 
 var conditionsRU = map[string]string{
@@ -84,12 +101,7 @@ var conditionsRU = map[string]string{
 // the same as for a model-issued call.
 func (c *conversation) fastPath(ctx context.Context, text string, out *pipeline.Output) (message, bool) {
 	t := strings.ToLower(strings.TrimSpace(text))
-	// Speech recognition sometimes keeps the wake word in the transcript.
-	for _, w := range []string{"маруся", "алиса"} {
-		if strings.HasPrefix(t, w) {
-			t = strings.TrimLeft(strings.TrimPrefix(t, w), " ,.!?-")
-		}
-	}
+	t = stripWakeWord(t)
 	if t == "" {
 		return message{}, false
 	}
@@ -124,6 +136,19 @@ func (c *conversation) fastPath(ctx context.Context, text string, out *pipeline.
 		return message{Role: "assistant", Content: reply}, true
 	}
 
+	if dateRE.MatchString(t) {
+		res, fail, ok := c.callTool(ctx, "time_now", map[string]any{}, out)
+		if !ok {
+			return message{}, true
+		}
+		reply := fail
+		if reply == "" {
+			reply = dateReply(res)
+		}
+		out.Say(reply)
+		return message{Role: "assistant", Content: reply}, true
+	}
+
 	if !commandRE.MatchString(t) {
 		return message{}, false
 	}
@@ -145,10 +170,10 @@ func (c *conversation) fastPath(ctx context.Context, text string, out *pipeline.
 		call.Name, call.Args = "volume_mute", map[string]any{"muted": false}
 		reply = "Звук включён."
 	case volumeUpRE.MatchString(t):
-		call.Name, call.Args = "volume_adjust", map[string]any{"delta": 10}
+		call.Name, call.Args = "volume_adjust", map[string]any{"delta": volumeDelta(t)}
 		reply = "Сделала громче."
 	case volumeDownRE.MatchString(t):
-		call.Name, call.Args = "volume_adjust", map[string]any{"delta": -10}
+		call.Name, call.Args = "volume_adjust", map[string]any{"delta": -volumeDelta(t)}
 		reply = "Сделала тише."
 	case mediaNextRE.MatchString(t):
 		call.Name, call.Args = "media_control", map[string]any{"operation": "next"}
@@ -163,6 +188,12 @@ func (c *conversation) fastPath(ctx context.Context, text string, out *pipeline.
 		call.Name, call.Args = "media_control", map[string]any{"operation": "play"}
 		reply = "Продолжаю."
 	default:
+		if msg, ok := c.sceneFastPath(ctx, t, out); ok {
+			return msg, true
+		}
+		if msg, ok := c.brightnessFastPath(ctx, t, out); ok {
+			return msg, true
+		}
 		if msg, ok := c.homeFastPath(ctx, t, out); ok {
 			return msg, true
 		}
@@ -346,4 +377,177 @@ func deviceName(d map[string]any) string {
 		return name + " (" + room + ")"
 	}
 	return name
+}
+
+// stripWakeWord removes a leading wake word that speech recognition kept in
+// the transcript.
+func stripWakeWord(t string) string {
+	for _, w := range []string{"маруся"} {
+		if strings.HasPrefix(t, w) {
+			return strings.TrimLeft(strings.TrimPrefix(t, w), " ,.!?-")
+		}
+	}
+	return t
+}
+
+// volumeDelta reads "на 20" from a relative volume command; the default step
+// is ten, and the step is capped so one phrase cannot jump the whole range.
+func volumeDelta(t string) int {
+	m := volumeDeltaRE.FindStringSubmatch(t)
+	if m == nil {
+		return 10
+	}
+	d, err := strconv.Atoi(m[1])
+	if err != nil || d <= 0 {
+		return 10
+	}
+	return min(d, 50)
+}
+
+var monthsRU = [...]string{"января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"}
+
+var weekdaysRU = map[string]string{
+	"Monday": "понедельник", "Tuesday": "вторник", "Wednesday": "среда",
+	"Thursday": "четверг", "Friday": "пятница", "Saturday": "суббота", "Sunday": "воскресенье",
+}
+
+// dateReply answers "какое сегодня число" and "какой сегодня день" from the
+// time skill, which already returns the date and the weekday.
+func dateReply(res map[string]any) string {
+	date, _ := res["date"].(string)
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return "Не получилось узнать дату."
+	}
+	day := fmt.Sprintf("%d %s", t.Day(), monthsRU[t.Month()-1])
+	weekday, _ := res["weekday"].(string)
+	if w := weekdaysRU[weekday]; w != "" {
+		return fmt.Sprintf("Сегодня %s, %s.", w, day)
+	}
+	return "Сегодня " + day + "."
+}
+
+// sceneFastPath runs a Yandex Smart Home scene by name, e.g. "включи сцену
+// Спокойной ночи".
+func (c *conversation) sceneFastPath(ctx context.Context, t string, out *pipeline.Output) (message, bool) {
+	m := sceneRE.FindStringSubmatch(t)
+	if m == nil {
+		return message{}, false
+	}
+	query := strings.TrimSuffix(strings.TrimSpace(m[2]), " пожалуйста")
+	if query == "" {
+		return message{}, false
+	}
+	res, fail, ok := c.callTool(ctx, "yandex_home_find", map[string]any{"query": query}, out)
+	if !ok {
+		return message{}, true
+	}
+	if fail != "" {
+		out.Say(fail)
+		return message{Role: "assistant", Content: fail}, true
+	}
+	var found map[string]any
+	for _, sc := range scenarioList(res) {
+		name, _ := sc["name"].(string)
+		if strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+			found = sc
+			break
+		}
+	}
+	if found == nil {
+		reply := "Не нашла такую сцену."
+		out.Say(reply)
+		return message{Role: "assistant", Content: reply}, true
+	}
+	id, _ := found["id"].(string)
+	name, _ := found["name"].(string)
+	_, fail, ok = c.callTool(ctx, "yandex_home_scene", map[string]any{"id": id}, out)
+	if !ok {
+		return message{}, true
+	}
+	reply := fmt.Sprintf("Запустила сцену «%s».", name)
+	if fail != "" {
+		reply = fail
+	}
+	out.Say(reply)
+	return message{Role: "assistant", Content: reply}, true
+}
+
+// brightnessFastPath sets a light's brightness, e.g. "яркость в зале 50" or
+// "поставь яркость торшера 50". Without a device or a room it stays with the
+// model, which can ask a question.
+func (c *conversation) brightnessFastPath(ctx context.Context, t string, out *pipeline.Output) (message, bool) {
+	level := 0
+	query := ""
+	switch {
+	case brightnessRoomRE.MatchString(t):
+		m := brightnessRoomRE.FindStringSubmatch(t)
+		query = strings.TrimSpace(m[1])
+		level, _ = strconv.Atoi(m[2])
+	case brightnessDeviceRE.MatchString(t):
+		m := brightnessDeviceRE.FindStringSubmatch(t)
+		query = strings.TrimSpace(m[1])
+		level, _ = strconv.Atoi(m[2])
+	case brightnessPlaceRE.MatchString(t):
+		m := brightnessPlaceRE.FindStringSubmatch(t)
+		level, _ = strconv.Atoi(m[1])
+		query = strings.TrimSpace(m[2])
+	default:
+		return message{}, false
+	}
+	query = strings.TrimSuffix(query, " пожалуйста")
+	if query == "" {
+		return message{}, false
+	}
+	level = max(1, min(100, level))
+	res, fail, ok := c.callTool(ctx, "yandex_home_find", map[string]any{"query": query}, out)
+	if !ok {
+		return message{}, true
+	}
+	if fail != "" {
+		out.Say(fail)
+		return message{Role: "assistant", Content: fail}, true
+	}
+	devices := deviceList(res)
+	if len(devices) == 0 {
+		reply := "Не нашла такое устройство."
+		out.Say(reply)
+		return message{Role: "assistant", Content: reply}, true
+	}
+	if len(devices) > 1 {
+		names := make([]string, 0, min(len(devices), 5))
+		for _, d := range devices[:min(len(devices), 5)] {
+			names = append(names, deviceName(d))
+		}
+		reply := "Нашла несколько: " + strings.Join(names, ", ") + ". Уточни комнату."
+		out.Say(reply)
+		return message{Role: "assistant", Content: reply}, true
+	}
+	id, _ := devices[0]["id"].(string)
+	_, fail, ok = c.callTool(ctx, "yandex_home_control", map[string]any{"id": id, "action": "set_brightness", "value": level}, out)
+	if !ok {
+		return message{}, true
+	}
+	reply := fmt.Sprintf("Яркость %d процентов.", level)
+	if fail != "" {
+		reply = fail
+	}
+	out.Say(reply)
+	return message{Role: "assistant", Content: reply}, true
+}
+
+func scenarioList(res map[string]any) []map[string]any {
+	switch s := res["scenarios"].(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(s))
+		for _, v := range s {
+			if m, ok := v.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	case []map[string]any:
+		return s
+	}
+	return nil
 }
