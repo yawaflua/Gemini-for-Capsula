@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -61,6 +62,11 @@ func (s state) indicator() indicator.State {
 
 const sendTimeout = 5 * time.Second
 
+// idleBuffered is how much audio before the wake is kept for the replay. A
+// command said right after the wake word may be completely over by the time
+// the server reports the detection.
+const idleBuffered = 5 * time.Second
+
 // session is the per-connection state machine. All fields are owned by the
 // run goroutine.
 type session struct {
@@ -75,18 +81,23 @@ type session struct {
 	since     time.Time
 	turnSeq   int
 	turnID    string
-	speech    bool      // turn_start was sent for the current turn
-	remote    bool      // the current turn was started by the server (remote_turn)
-	ending    bool      // the model ended the conversation: no follow-up
-	announce  bool      // the current turn plays an announcement (TypeAnnounce)
-	askListen bool      // ...after which an answer is expected
-	replyTo   string    // the turn being recorded answers this announcement
-	wakeFeed  bool      // stream idle microphone audio for the server's wake word spotter
-	deafUntil time.Time // ignore the mic while our own earcon plays
+	speech    bool            // turn_start was sent for the current turn
+	maxDB     float64         // loudest frame of the current listening window
+	hp        *audio.HighPass // removes room rumble before the VAD
+	remote    bool            // the current turn was started by the server (remote_turn)
+	ending    bool            // the model ended the conversation: no follow-up
+	announce  bool            // the current turn plays an announcement (TypeAnnounce)
+	askListen bool            // ...after which an answer is expected
+	replyTo   string          // the turn being recorded answers this announcement
+	wakeFeed  bool            // stream idle microphone audio for the server's wake word spotter
+	deafUntil time.Time       // ignore the mic while our own earcon plays
 	preroll   [][]byte
-	failed    bool // the current turn produced an error
-	replied   bool // the current turn produced audio
-	ducked    bool // media was paused by us and must be resumed
+	idle      [][]byte // idle microphone audio, replayed after a wake
+	idleBytes int
+	idleAt    time.Time // when the last idle frame arrived
+	failed    bool      // the current turn produced an error
+	replied   bool      // the current turn produced audio
+	ducked    bool      // media was paused by us and must be resumed
 	heard     strings.Builder
 	said      strings.Builder
 
@@ -235,11 +246,15 @@ func (s *session) startListening(ctx context.Context, timeout time.Duration) {
 	s.turnSeq++
 	s.turnID = fmt.Sprintf("%s-%d-%d", s.a.cfg.DeviceID, time.Now().Unix(), s.turnSeq)
 	s.speech, s.failed, s.replied, s.remote, s.ending = false, false, false, false, false
+	s.maxDB = -120
 	s.announce, s.askListen, s.replyTo = false, false, ""
 	s.preroll = s.preroll[:0]
 	s.heard.Reset()
 	s.said.Reset()
 
+	if s.hp == nil {
+		s.hp = audio.NewHighPass(180, float64(s.inFormat.SampleRateHertz))
+	}
 	s.ep.Reset(timeout)
 	s.duck(ctx)
 
@@ -248,11 +263,14 @@ func (s *session) startListening(ctx context.Context, timeout time.Duration) {
 		s.deafUntil = time.Now().Add(earcon + 80*time.Millisecond)
 	}
 	s.setState(stateListening)
+	s.replayIdle(ctx)
 }
 
 // onFrame handles 20 ms of microphone audio.
 func (s *session) onFrame(ctx context.Context, f []byte) {
+	s.hp.Process(f)
 	if s.state == stateIdle {
+		s.rememberIdle(f)
 		s.ep.Observe(f)
 		if s.wakeFeed && !s.a.muted.Load() {
 			s.sendAudio(ctx, f)
@@ -261,6 +279,42 @@ func (s *session) onFrame(ctx context.Context, f []byte) {
 	}
 	if s.state != stateListening || time.Now().Before(s.deafUntil) {
 		return
+	}
+	s.listenFrame(ctx, f)
+}
+
+// rememberIdle keeps the last idleBuffered seconds of filtered microphone
+// audio, so startListening can replay what was said while the wake spotter
+// was still confirming the wake word.
+func (s *session) rememberIdle(f []byte) {
+	s.idleAt = time.Now()
+	limit := s.inFormat.FrameSize(idleBuffered)
+	s.idle = append(s.idle, append([]byte(nil), f...))
+	s.idleBytes += len(f)
+	for s.idleBytes > limit && len(s.idle) > 1 {
+		s.idleBytes -= len(s.idle[0])
+		s.idle = s.idle[1:]
+	}
+}
+
+// replayIdle feeds the buffered idle audio to the endpointer and forgets it.
+func (s *session) replayIdle(ctx context.Context) {
+	frames := s.idle
+	s.idle, s.idleBytes = nil, 0
+	if time.Since(s.idleAt) > 500*time.Millisecond {
+		return // a reply or announcement played since; the buffer is stale
+	}
+	for _, f := range frames {
+		if s.state != stateListening {
+			return // the buffered audio already completed the utterance
+		}
+		s.listenFrame(ctx, f)
+	}
+}
+
+func (s *session) listenFrame(ctx context.Context, f []byte) {
+	if db := audio.DBFS(audio.RMS(f)); db > s.maxDB {
+		s.maxDB = db
 	}
 
 	dec := s.ep.Process(f, s.inFormat.Duration(len(f)))
@@ -283,7 +337,7 @@ func (s *session) onFrame(ctx context.Context, f []byte) {
 		s.a.log.Info("utterance captured", "turn", s.turnID, "by", "device", "length", time.Since(s.since).Round(100*time.Millisecond))
 		s.setState(stateThinking)
 	case vad.NoSpeech:
-		s.a.log.Info("no speech detected")
+		s.a.log.Info("no speech detected", "max_db", math.Round(s.maxDB), "floor_db", math.Round(s.ep.NoiseFloor()))
 		s.declineAnswer(ctx)
 		s.a.playEarcon(ctx, audio.EarconDone)
 		s.goIdle(ctx)
