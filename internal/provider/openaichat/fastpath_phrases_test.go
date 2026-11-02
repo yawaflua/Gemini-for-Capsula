@@ -105,3 +105,27 @@ func TestDateReply(t *testing.T) {
 		t.Errorf("dateReply(bad) = %q", got)
 	}
 }
+
+func TestVolumeWordRE(t *testing.T) {
+	cases := map[string]int{
+		"поставь громкость с половиной": 50,
+		"поставь громко с половиной":    50,
+		"громкость на половину":         50,
+		"громкость на максимум":         100,
+		"поставь громкости все":         100,
+		"звук на минимум":               10,
+	}
+	for phrase, want := range cases {
+		m := volumeWordRE.FindStringSubmatch(phrase)
+		if m == nil {
+			t.Errorf("volumeWordRE does not match %q", phrase)
+			continue
+		}
+		if got := volumeWordLevel(m[1]); got != want {
+			t.Errorf("volumeWordLevel(%q) = %d, want %d", phrase, got, want)
+		}
+	}
+	if volumeWordRE.MatchString("громкость 50") {
+		t.Error("volumeWordRE must not swallow digit commands")
+	}
+}

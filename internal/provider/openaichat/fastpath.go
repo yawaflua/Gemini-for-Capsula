@@ -37,6 +37,7 @@ var (
 	commandRE = regexp.MustCompile(`(?i)^(сделай|поставь|установи|включи|выключи|отключи|убери|верни|убавь|прибавь|увеличь|уменьши|громче|погромче|тише|потише|громкость|яркость|следующий|следующую|предыдущий|предыдущую|пауза|паузу|продолжи|продолжай|играй|дальше|назад|стоп|запусти|активируй|выполни|без|next|prev|play)(?:[\s,.:;!?-]|$)`)
 
 	volumeSetRE  = regexp.MustCompile(`(?i)громкость\s+(?:на\s+)?(\d{1,3})`)
+	volumeWordRE = regexp.MustCompile(`(?i)(?:громкост|громко|звук)[а-яё]*\s+(?:на\s+|с\s+|в\s+|до\s+)?(половин[а-яё]*|максимум[а-яё]*|минимум[а-яё]*|всю|все|весь)`)
 	volumeUpRE   = regexp.MustCompile(`(?i)(громче|погромче|прибавь|увеличь)`)
 	volumeDownRE = regexp.MustCompile(`(?i)(тише|потише|убавь|уменьши)`)
 	muteOnRE     = regexp.MustCompile(`(?i)(выключи|отключи|убери)\s+(звук|громкость)|без\s+звука`)
@@ -161,6 +162,10 @@ func (c *conversation) fastPath(ctx context.Context, text string, out *pipeline.
 		if level > 100 {
 			level = 100
 		}
+		call.Name, call.Args = "volume_set", map[string]any{"level": level}
+		reply = fmt.Sprintf("Громкость %d процентов.", level)
+	case volumeWordRE.MatchString(t):
+		level := volumeWordLevel(volumeWordRE.FindStringSubmatch(t)[1])
 		call.Name, call.Args = "volume_set", map[string]any{"level": level}
 		reply = fmt.Sprintf("Громкость %d процентов.", level)
 	case muteOnRE.MatchString(t):
@@ -388,6 +393,18 @@ func stripWakeWord(t string) string {
 		}
 	}
 	return t
+}
+
+// volumeWordLevel turns "на половину" and "на максимум" into a level.
+func volumeWordLevel(word string) int {
+	switch {
+	case strings.HasPrefix(word, "половин"):
+		return 50
+	case strings.HasPrefix(word, "минимум"):
+		return 10
+	default: // максимум, всю, все, весь
+		return 100
+	}
 }
 
 // volumeDelta reads "на 20" from a relative volume command; the default step
