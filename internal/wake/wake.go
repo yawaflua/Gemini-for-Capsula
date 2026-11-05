@@ -109,10 +109,13 @@ func (s *Stream) Configure(keywords []string, sampleRate int) error {
 	return s.ws.Write(ctx, websocket.MessageText, b)
 }
 
-// Write sends a chunk of audio. It gives up quickly rather than delaying the
-// caller: the spotter only needs most of the audio.
+// Write sends a chunk of audio. The timeout only guards a dead spotter: the
+// websocket library closes the whole connection when a write deadline expires,
+// so a short timeout used to drop the stream whenever the host was busy. Five
+// seconds is long enough to ride out a load spike and still bounds a stalled
+// write; the caller keeps feeding audio meanwhile.
 func (s *Stream) Write(pcm []byte) error {
-	ctx, cancel := context.WithTimeout(s.ctx, time.Second)
+	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	defer cancel()
 	return s.ws.Write(ctx, websocket.MessageBinary, pcm)
 }
